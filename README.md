@@ -7,7 +7,7 @@ Voici l'architecture générale du projet : deux cartes ESP32 qui communiquent e
 
 Le second point intéressant, c'est la logique de l'écran tactile : un appui court bascule un relais, un appui long (700 ms) ouvre un clavier pour le renommer.
 
-<img width="723" height="399" alt="image" src="https://github.com/user-attachments/assets/1dd408ec-7074-4743-a1a7-62286477c4c4" />
+<img width="627" height="419" alt="image" src="https://github.com/user-attachments/assets/69527295-e996-4274-9263-d608ed1ca249" />
 
 A retenir sur les points d'attention signalés dans le README :
 
