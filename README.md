@@ -2,6 +2,7 @@
 Système de gestion pour commutateur d'antennes
 
 <img width="617" height="250" alt="image" src="https://github.com/user-attachments/assets/44e21be0-e699-4d9a-b0b9-85c426d76eea" />
+
 Voici l'architecture générale du projet : deux cartes ESP32 qui communiquent en I2C, l'une gérant l'écran tactile, l'autre pilotant les relais et le serveur web.
 
 Le second point intéressant, c'est la logique de l'écran tactile : un appui court bascule un relais, un appui long (700 ms) ouvre un clavier pour le renommer.
