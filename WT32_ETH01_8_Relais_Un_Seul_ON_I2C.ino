@@ -61,7 +61,8 @@ void handleRoot(){server.send(200,"text/html; charset=utf-8",page());}
 void handleApi(){String j="[";for(int i=0;i<8;i++){if(i)j+=",";j+="{\"name\":\"";String s=relayNames[i];s.replace("\\","\\\\");s.replace("\"","\\\"");j+=s;j+="\",\"on\":"+(relayState[i]?String("true"):String("false"))+"}";}j+="]";server.send(200,"application/json",j);}
 void handleRelay(){if(!server.hasArg("relay")||!server.hasArg("state")){server.send(400,"text/plain","Parametres manquants");return;}int r=server.arg("relay").toInt(),s=server.arg("state").toInt();if(r<0||r>7||s<0||s>1){server.send(400,"text/plain","Parametres invalides");return;}setRelay(r,s);server.send(200,"text/plain","OK");}
 void handleName(){if(!server.hasArg("relay")||!server.hasArg("name")){server.send(400,"text/plain","Parametres manquants");return;}int r=server.arg("relay").toInt();if(r<0||r>7){server.send(400,"text/plain","Relais invalide");return;}saveName(r,server.arg("name").c_str());server.send(200,"text/plain","OK");}
-void setup(){Serial.begin(115200);for(auto p:relayPins)pinMode(p,OUTPUT);allOff();loadNames();Network.onEvent(onEvent);#if ESP_ARDUINO_VERSION_MAJOR >= 3
+void setup(){Serial.begin(115200);for(auto p:relayPins)pinMode(p,OUTPUT);allOff();loadNames();Network.onEvent(onEvent);
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
 ETH.begin(ETH_PHY_TYPE,ETH_PHY_ADDR,ETH_PHY_MDC,ETH_PHY_MDIO,ETH_PHY_POWER,ETH_CLK_MODE);
 #else
 ETH.begin(ETH_PHY_ADDR,ETH_PHY_POWER,ETH_PHY_MDC,ETH_PHY_MDIO,ETH_PHY_TYPE,ETH_CLK_MODE);
