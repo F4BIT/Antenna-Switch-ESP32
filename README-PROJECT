@@ -1,0 +1,49 @@
+PROJET WT32-ETH01 + ESP32-S3 4 pouces + 8 relais
+===================================================
+
+FICHIERS
+--------
+1) WT32_ETH01_8_Relais_Un_Seul_ON_I2C.ino
+2) ESP32S3_ES3C40P_Controle_8_Relais_I2C.ino
+3) TFT_eSPI_User_Setup.h
+
+FONCTIONNEMENT
+--------------
+Le WT32-ETH01 pilote physiquement les 8 relais et conserve la regle : un seul relais ON a la fois.
+L'ESP32-S3 pilote l'ecran et le tactile. Les noms sont sauvegardes dans Preferences de l'ESP32-S3 et transmis au WT32. La page Web du WT32 utilise les noms recus.
+
+Le renommage est fait par APPUI LONG (environ 0,7 s) sur un relais. Un clavier simplifie apparait. Valider enregistre le nom et le synchronise avec le WT32.
+La page Web permet aussi de renommer un relais : le WT32 sauvegarde alors le nom dans ses Preferences. Pour une synchronisation bidirectionnelle parfaite après une modification Web, il faut ajouter la lecture périodique des noms par l'ESP32-S3 ; la version fournie privilégie la modification depuis l'écran et l'affichage Web immédiat.
+
+I2C
+---
+Adresse WT32 : 0x12
+Adresse tactile FT6336U supposée : 0x38
+ESP32-S3 : SDA GPIO16, SCL GPIO15 (à vérifier sur la carte)
+WT32 : SDA GPIO32, SCL GPIO33
+GND commun obligatoire.
+
+RELAIS WT32
+-----------
+IN1 GPIO4
+IN2 GPIO5
+IN3 GPIO17
+IN4 GPIO19
+IN5 GPIO21
+IN6 GPIO22
+IN7 GPIO25
+IN8 GPIO26
+
+ETHERNET
+--------
+LAN8720, configuration issue du programme d'origine. DHCP automatique.
+
+TFT_eSPI
+--------
+Le fichier TFT_eSPI_User_Setup.h est un point de départ pour ST7796 320x480. Copiez son contenu dans User_Setup.h ou sélectionnez un fichier setup dédié via User_Setup_Select.h.
+ATTENTION : le brochage LCD exact varie selon les cartes ESP32-S3 4 pouces. Si l'ecran reste blanc, ne pas conclure a une panne : verifier le brochage de la revision de la carte.
+
+IMPORTANT
+---------
+Le code utilise le tactile FT6336U et des GPIO supposes, ces valeurs ne peuvent pas être garanties.
+Le bus I2C doit être compatible 3,3 V. Utiliser des masses communes et des résistances pull-up adaptées si nécessaire.
