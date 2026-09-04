@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Infographie — Antenna Switch ESP32</title>
+<style>
+:root{
+  --bg:#0b1020;--panel:#111936;--panel2:#182348;--text:#eef3ff;--muted:#aeb9d6;
+  --accent:#66d9ff;--accent2:#8cf0b1;--warn:#ffd166;--danger:#ff7b8b;--line:#2d3b67;
+}
+*{box-sizing:border-box} body{margin:0;background:linear-gradient(135deg,#080c18,#101936 55%,#0b1224);
+font-family:Inter,Segoe UI,Arial,sans-serif;color:var(--text);line-height:1.45}
+.wrap{max-width:1180px;margin:auto;padding:28px}
+.hero{padding:34px;border:1px solid var(--line);border-radius:24px;background:linear-gradient(120deg,#15224a,#111a35);
+box-shadow:0 18px 60px #0006}
+.kicker{color:var(--accent);font-weight:800;letter-spacing:.12em;text-transform:uppercase;font-size:.78rem}
+h1{font-size:clamp(2rem,5vw,4rem);margin:.25em 0 .15em;line-height:1}
+.subtitle{font-size:1.1rem;color:var(--muted);max-width:820px}
+.badges{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}.badge{padding:7px 11px;border:1px solid var(--line);border-radius:999px;background:#0c1430;color:#dce6ff;font-size:.86rem}
+.grid{display:grid;gap:18px;margin-top:18px}.g2{grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}.g3{grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
+.card{background:rgba(17,25,54,.92);border:1px solid var(--line);border-radius:18px;padding:22px}
+.card h2{margin:0 0 8px;font-size:1.3rem}.card h3{margin:12px 0 5px}.muted{color:var(--muted)}
+.stat{font-size:2.2rem;font-weight:900;color:var(--accent)} .small{font-size:.9rem;color:var(--muted)}
+.arch{display:grid;grid-template-columns:1fr 120px 1fr;align-items:center;gap:14px;margin-top:16px}
+.node{padding:22px;border-radius:18px;background:#0c1430;border:1px solid var(--line);text-align:center}
+.node strong{display:block;font-size:1.25rem}.node span{color:var(--muted);font-size:.9rem}
+.arrow{text-align:center;color:var(--accent);font-weight:900}.arrow div{font-size:2rem}
+ul{padding-left:20px;margin:8px 0}li{margin:6px 0}
+table{width:100%;border-collapse:collapse;font-size:.92rem}th,td{text-align:left;padding:9px;border-bottom:1px solid var(--line)}th{color:var(--accent)}
+.code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;background:#080d1d;border:1px solid #202d50;padding:2px 6px;border-radius:6px}
+.flow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px}.step{padding:11px 13px;background:#0c1430;border:1px solid var(--line);border-radius:12px}.chev{color:var(--accent);font-size:1.4rem}
+.relaygrid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:15px}
+.relay{padding:14px;text-align:center;border-radius:12px;border:1px solid var(--line);background:#0c1430}.relay b{display:block;color:var(--accent2);font-size:1.1rem}
+.callout{border-left:4px solid var(--warn);background:#2a2412;padding:14px 16px;border-radius:10px;color:#f9e9b5;margin-top:14px}
+.good{border-left:4px solid var(--accent2);background:#10251c;padding:14px 16px;border-radius:10px}
+footer{color:#8390b1;text-align:center;padding:30px 0 10px;font-size:.85rem}
+@media(max-width:760px){.arch{grid-template-columns:1fr}.arrow{transform:rotate(90deg)}.relaygrid{grid-template-columns:repeat(2,1fr)}.wrap{padding:15px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<section class="hero">
+  <div class="kicker">Infographie technique · Projet embarqué</div>
+  <h1>Antenna Switch ESP32</h1>
+  <p class="subtitle">Commande de <b>8 relais</b> pour un commutateur d’antennes, avec écran tactile ESP32‑S3, contrôleur WT32‑ETH01, bus I²C et interface Web Ethernet.</p>
+  <div class="badges">
+    <span class="badge">ESP32‑S3 + TFT 320×480</span><span class="badge">FT6336U tactile</span>
+    <span class="badge">WT32‑ETH01</span><span class="badge">8 relais</span>
+    <span class="badge">I²C 100 kHz</span><span class="badge">LAN8720 / Ethernet</span>
+  </div>
+</section>
+
+<div class="grid g3">
+  <div class="card"><div class="stat">8</div><b>relais pilotés</b><div class="small">Un seul relais peut être ON à la fois.</div></div>
+  <div class="card"><div class="stat">2</div><b>microcontrôleurs</b><div class="small">ESP32‑S3 pour l’UI · WT32‑ETH01 pour la puissance et le Web.</div></div>
+  <div class="card"><div class="stat">0x12</div><b>adresse I²C WT32</b><div class="small">L’ESP32‑S3 agit comme maître, le WT32 comme esclave.</div></div>
+</div>
+
+<section class="card" style="margin-top:18px">
+  <h2>01 · Architecture générale</h2>
+  <p class="muted">La séparation des rôles simplifie l’interface utilisateur et centralise le contrôle physique des relais.</p>
+  <div class="arch">
+    <div class="node"><strong>ESP32‑S3</strong><span>Écran TFT · tactile · noms · interface locale</span><br><br><b>I²C maître</b><br><span>SDA GPIO16 · SCL GPIO15</span></div>
+    <div class="arrow"><div>⇄</div><span>I²C</span></div>
+    <div class="node"><strong>WT32‑ETH01</strong><span>Logique relais · Ethernet · serveur Web · mémoire</span><br><br><b>I²C esclave 0x12</b><br><span>SDA GPIO32 · SCL GPIO33</span></div>
+  </div>
+  <div class="good"><b>Principe clé :</b> le WT32 est la source d’autorité pour l’état physique des relais et impose la règle « un seul ON ».</div>
+</section>
+
+<section class="grid g2">
+  <div class="card">
+    <h2>02 · Expérience sur l’écran tactile</h2>
+    <div class="flow">
+      <span class="step">Appui court</span><span class="chev">→</span><span class="step">Inverse ON/OFF</span><span class="chev">→</span><span class="step">Lecture d’état</span>
+    </div>
+    <div class="flow">
+      <span class="step">Appui ≥ 700 ms</span><span class="chev">→</span><span class="step">Clavier AZERTY simplifié</span><span class="chev">→</span><span class="step">Renommage</span>
+    </div>
+    <ul>
+      <li>Les noms sont limités à <b>17 caractères</b>.</li>
+      <li>Les noms sont stockés dans <span class="code">Preferences</span> de l’ESP32‑S3.</li>
+      <li>Après validation, le nouveau nom est transmis au WT32.</li>
+      <li>L’écran relit les états des relais périodiquement, environ toutes les <b>500 ms</b>.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>03 · Interface Web Ethernet</h2>
+    <p class="muted">Le WT32 embarque un serveur HTTP sur le port 80.</p>
+    <div class="flow">
+      <span class="step">Navigateur</span><span class="chev">→</span><span class="step">WT32</span><span class="chev">→</span><span class="step">Relais</span>
+    </div>
+    <h3>Routes principales</h3>
+    <table>
+      <tr><th>Route</th><th>Rôle</th></tr>
+      <tr><td><span class="code">/</span></td><td>Page Web de commande</td></tr>
+      <tr><td><span class="code">/api</span></td><td>États + noms en JSON</td></tr>
+      <tr><td><span class="code">/relay</span></td><td>Commande ON/OFF</td></tr>
+      <tr><td><span class="code">/name</span></td><td>Renommage d’un relais</td></tr>
+    </table>
+    <p class="small">La page Web rafraîchit l’état environ toutes les secondes.</p>
+  </div>
+</section>
+
+<section class="card" style="margin-top:18px">
+  <h2>04 · Règle de sécurité fonctionnelle : un seul relais ON</h2>
+  <p class="muted">Chaque commande passe par <span class="code">setRelay()</span>. Lorsqu’un relais est activé, <span class="code">allOff()</span> désactive d’abord les sept autres.</p>
+  <div class="relaygrid">
+    <div class="relay"><b>R1</b> GPIO 4</div><div class="relay"><b>R2</b> GPIO 5</div>
+    <div class="relay"><b>R3</b> GPIO 17</div><div class="relay"><b>R4</b> GPIO 19</div>
+    <div class="relay"><b>R5</b> GPIO 21</div><div class="relay"><b>R6</b> GPIO 22</div>
+    <div class="relay"><b>R7</b> GPIO 25</div><div class="relay"><b>R8</b> GPIO 26</div>
+  </div>
+  <p class="small">Les sorties sont configurées en <b>active LOW</b> : niveau logique inversé pour l’activation physique.</p>
+</section>
+
+<section class="grid g2">
+  <div class="card">
+    <h2>05 · Protocole I²C</h2>
+    <table>
+      <tr><th>Commande</th><th>Format / action</th></tr>
+      <tr><td><span class="code">0x01</span></td><td>Commande relais : index + 1=ON / 0=OFF</td></tr>
+      <tr><td><span class="code">0x02</span></td><td>Demande des 8 états</td></tr>
+      <tr><td><span class="code">0x03</span></td><td>Définition d’un nom : index + longueur + texte</td></tr>
+      <tr><td><span class="code">0x04</span></td><td>Demande des 8 noms</td></tr>
+      <tr><td><span class="code">0x05</span></td><td>Demande du statut Ethernet</td></tr>
+    </table>
+    <div class="callout"><b>Électrique :</b> bus I²C en 3,3 V, masse commune obligatoire. Des pull-up adaptées peuvent être nécessaires.</div>
+  </div>
+
+  <div class="card">
+    <h2>06 · Mémoire & synchronisation</h2>
+    <div class="flow">
+      <span class="step">Nom modifié sur écran</span><span class="chev">→</span><span class="step">Preferences S3</span><span class="chev">→</span><span class="step">I²C</span><span class="chev">→</span><span class="step">Preferences WT32</span>
+    </div>
+    <h3>À savoir</h3>
+    <ul>
+      <li>Les deux cartes utilisent <span class="code">Preferences</span> pour conserver les noms.</li>
+      <li>La synchronisation fournie est surtout <b>écran → WT32 → Web</b>.</li>
+      <li>Un renommage effectué depuis le Web est enregistré sur le WT32, mais l’écran ne relit pas automatiquement les noms.</li>
+    </ul>
+  </div>
+</section>
+
+<section class="card" style="margin-top:18px">
+  <h2>07 · Ethernet</h2>
+  <div class="grid g3">
+    <div><b>PHY</b><br><span class="muted">LAN8720</span></div>
+    <div><b>Mode par défaut</b><br><span class="muted">DHCP automatique</span></div>
+    <div><b>IP fixe</b><br><span class="muted">Prévue dans le code, désactivée par défaut</span></div>
+  </div>
+  <p class="small">Nom d’hôte configuré : <span class="code">WT32-ETH01-8RELAIS</span>.</p>
+</section>
+
+<section class="card" style="margin-top:18px">
+  <h2>08 · TFT + tactile : configuration matérielle à valider</h2>
+  <table>
+    <tr><th>Fonction</th><th>GPIO / paramètre</th></tr>
+    <tr><td>TFT MOSI</td><td>11</td></tr><tr><td>TFT MISO</td><td>13</td></tr>
+    <tr><td>TFT SCLK</td><td>12</td></tr><tr><td>TFT CS</td><td>10</td></tr>
+    <tr><td>TFT DC</td><td>9</td></tr><tr><td>TFT BL</td><td>45</td></tr>
+    <tr><td>Résolution</td><td>320 × 480 · ST7796</td></tr>
+    <tr><td>Tactile</td><td>FT6336U · adresse supposée 0x38</td></tr>
+  </table>
+  <div class="callout"><b>Point d’attention majeur :</b> le dépôt précise que le brochage LCD/tactile peut varier selon la révision de la carte ESP32‑S3 4 pouces. Il faut donc vérifier la carte réelle avant de considérer ces GPIO comme définitifs.</div>
+</section>
+
+<section class="card" style="margin-top:18px">
+  <h2>09 · Flux complet d’une commande</h2>
+  <div class="flow">
+    <span class="step">Utilisateur</span><span class="chev">→</span>
+    <span class="step">Écran tactile ou Web</span><span class="chev">→</span>
+    <span class="step">I²C / HTTP</span><span class="chev">→</span>
+    <span class="step">WT32</span><span class="chev">→</span>
+    <span class="step">setRelay()</span><span class="chev">→</span>
+    <span class="step">allOff() si ON</span><span class="chev">→</span>
+    <span class="step">Sortie GPIO</span><span class="chev">→</span>
+    <span class="step">Relais physique</span>
+  </div>
+</section>
+
+<section class="card" style="margin-top:18px">
+  <h2>10 · Contenu du dépôt</h2>
+  <table>
+    <tr><th>Fichier</th><th>Fonction</th></tr>
+    <tr><td>ESP32S3_ES3C40P_Controle_8_Relais_I2C.ino</td><td>Interface TFT/tactile, renommage, communication I²C maître</td></tr>
+    <tr><td>WT32_ETH01_8_Relais_Un_Seul_ON_I2C.ino</td><td>Relais, règle mono-ON, Ethernet, serveur Web, I²C esclave</td></tr>
+    <tr><td>TFT_eSPI_User_Setup.h</td><td>Configuration de départ du TFT ST7796 320×480</td></tr>
+    <tr><td>README.md / README-PROJECT</td><td>Architecture, câblage et points d’attention</td></tr>
+    <tr><td>LICENSE</td><td>GNU GPL v3</td></tr>
+  </table>
+</section>
+
+<section class="card" style="margin-top:18px">
+  <h2>À retenir</h2>
+  <div class="good"><b>Architecture claire :</b> l’ESP32‑S3 gère l’ergonomie, le WT32 gère les relais et le réseau.</div>
+  <div class="callout"><b>À valider avant mise en service :</b> brochage exact du TFT/tactile selon la révision matérielle et comportement électrique du bus I²C.</div>
+</section>
+
+<footer>Infographie générée à partir du contenu du projet « Antenna-Switch-ESP32 » fourni dans l’archive.</footer>
+</div>
+</body>
+</html>
