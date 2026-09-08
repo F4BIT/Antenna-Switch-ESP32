@@ -285,7 +285,7 @@ void saveName() {
 
 void draw() {
 
-  lcd.fillScreen(TFT_DARKGREY);
+  lcd.fillScreen(TFT_BLACK);
 
   // Barre supérieure
   lcd.fillRect(
@@ -293,30 +293,33 @@ void draw() {
     0,
     320,
     52,
-    TFT_NAVY
+    TFT_BLACK
   );
 
   lcd.setTextColor(
     TFT_WHITE,
-    TFT_NAVY
+    TFT_BLACK
   );
 
   lcd.setTextDatum(MC_DATUM);
 
   lcd.drawString(
-    "COMMANDE 8 RELAIS",
+    "COMMANDE RELAIS D'ANTENNES",
     160,
     17,
     2
   );
 
   lcd.drawString(
-    "WT32-ETH01",
+    "",
     160,
     38,
     2
   );
 
+  lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+  lcd.setTextDatum(MC_DATUM);
+  lcd.drawString("F4BIT@2026-Copyleft", 160, 465, 2);
   lcd.setTextDatum(TL_DATUM);
 
   // Boutons relais
@@ -325,7 +328,7 @@ void draw() {
     uint16_t c =
       states[i]
       ? TFT_GREEN
-      : TFT_DARKGREY;
+      : TFT_RED;
 
     lcd.fillRoundRect(
       b[i].x,
