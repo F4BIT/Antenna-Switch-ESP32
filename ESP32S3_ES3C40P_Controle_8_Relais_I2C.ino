@@ -1,27 +1,40 @@
-/* ESP32-S3 + LovyanGFX (ST7796 SPI + tactile FT5x06) + WT32 I2C
- *  Les noms sont modifiables sur l'ecran par appui long (700 ms).
- *  Les noms sont memorises dans Preferences et envoyes au WT32.
- *  Clavier virtuel : chiffres (0-9) + lettres (AZERTY sans accents).
- */
+ /******************************************************************
+ *  ANTENNA CONTROL CENTER
+ * ESP32-S3 + LovyanGFX
+ * ST7796 SPI + tactile FT5x06 + WT32 I2C
+ *  Auteur :  F4BIT Stéphane
+ *  Date   :  2026-09-27
+ * INTERFACE MODERNE - DARK DASHBOARD
+ * Appui court  : ON / OFF
+ * Appui long   : modifier le nom (700 ms)
+ *
+ * Noms mémorisés dans Preferences
+ * Noms envoyés au WT32
+ * Clavier virtuel AZERTY + chiffres
+ * ============================================================ */
 
 #define LGFX_USE_V1
 
-#include <LovyanGFX.hpp>
 #include <Arduino.h>
 #include <Wire.h>
 #include <Preferences.h>
+#include <LovyanGFX.hpp>
 
-// ---------- Configuration matérielle écran + tactile ----------
+// ============================================================
+// ECRAN
+// ============================================================
 
 class LGFX : public lgfx::LGFX_Device {
+
   lgfx::Panel_ST7796 _panel_instance;
   lgfx::Bus_SPI _bus_instance;
   lgfx::Touch_FT5x06 _touch_instance;
 
 public:
+
   LGFX(void) {
 
-    { // Configuration du bus SPI matériel
+    {
       auto cfg = _bus_instance.config();
 
       cfg.spi_host = SPI2_HOST;
@@ -32,19 +45,19 @@ public:
       cfg.pin_sclk = 12;
       cfg.pin_mosi = 11;
       cfg.pin_miso = 13;
-      cfg.pin_dc = 46;
+      cfg.pin_dc   = 46;
 
       _bus_instance.config(cfg);
       _panel_instance.setBus(&_bus_instance);
     }
 
-    { // Configuration de la surface LCD
+    {
       auto cfg = _panel_instance.config();
 
       cfg.pin_cs = 10;
       cfg.pin_rst = -1;
 
-      cfg.panel_width = 320;
+      cfg.panel_width  = 320;
       cfg.panel_height = 480;
 
       cfg.offset_x = 0;
@@ -56,7 +69,7 @@ public:
       _panel_instance.config(cfg);
     }
 
-    { // Configuration de l'écran tactile
+    {
       auto cfg = _touch_instance.config();
 
       cfg.x_min = 0;
@@ -86,24 +99,53 @@ public:
 LGFX lcd;
 Preferences prefs;
 
-// ---------- Broches ----------
+
+// ============================================================
+// CONFIGURATION
+// ============================================================
 
 const int BACKLIGHT_PIN = 45;
-const int BUZZER_PIN = 42;
-
-#define TFT_LIGHTBLUE 0xFBE0
-
-// ---------- I2C vers le WT32-ETH01 ----------
-// Partage les broches du tactile
+const int BUZZER_PIN    = 42;
 
 const uint8_t WT32 = 0x12;
 
 const int I2C_SDA = 16;
 const int I2C_SCL = 15;
 
-// ---------- Relais ----------
+
+// ============================================================
+// PALETTE MODERNE
+// ============================================================
+
+#define C_BG          0x1082   // fond bleu très sombre
+#define C_PANEL       0x18E3   // panneau
+#define C_PANEL2      0x2128   // panneau secondaire
+
+#define C_WHITE       0xFFFF
+#define C_TEXT        0xE73C
+#define C_MUTED       0x9CF3
+
+#define C_BLUE        0x3D9F
+#define C_CYAN        0x5DFF
+
+#define C_GREEN       0x4FE9
+#define C_GREEN_DARK  0x1CC5
+
+#define C_RED         0xF206
+#define C_RED_DARK    0x9004
+
+#define C_ORANGE      0xFD20
+
+#define C_KEY         0x2128
+#define C_KEY_ACTIVE  0x3A56
+
+
+// ============================================================
+// RELAIS
+// ============================================================
 
 char names[8][18] = {
+
   "Relais 1",
   "Relais 2",
   "Relais 3",
@@ -116,9 +158,13 @@ char names[8][18] = {
 
 uint8_t states[8] = {0};
 
-// ---------- Boutons ----------
+
+// ============================================================
+// BOUTONS
+// ============================================================
 
 struct B {
+
   int x;
   int y;
   int w;
@@ -127,22 +173,34 @@ struct B {
 
 B b[8];
 
-// ---------- Gestion tactile ----------
+
+// ============================================================
+// TACTILE
+// ============================================================
 
 unsigned long touchStart = 0;
+
 int touchIndex = -1;
+
 bool wasTouch = false;
 
 unsigned long lastPoll = 0;
 
-// ---------- Edition du nom ----------
+
+// ============================================================
+// EDITION
+// ============================================================
 
 String editName = "";
+
 int editIndex = -1;
+
 bool editing = false;
 
-// ---------- Clavier ----------
-// Chiffres (10) + lettres AZERTY (26) = 36 touches
+
+// ============================================================
+// CLAVIER
+// ============================================================
 
 const char keys[] =
   "0123456789AZERTYUIOPQSDFGHJKLMWXCVBN";
@@ -151,7 +209,54 @@ const int NKEYS = 36;
 
 
 // ============================================================
-// LECTURE DU TACTILE
+// UTILITAIRES GRAPHIQUES
+// ============================================================
+
+void textCenter(
+  const String &txt,
+  int x,
+  int y,
+  int font,
+  uint16_t color
+) {
+
+  lcd.setTextDatum(MC_DATUM);
+  lcd.setTextColor(color);
+  lcd.drawString(txt, x, y, font);
+}
+
+
+void roundedPanel(
+  int x,
+  int y,
+  int w,
+  int h,
+  uint16_t color,
+  uint16_t border = C_PANEL
+) {
+
+  lcd.fillRoundRect(
+    x,
+    y,
+    w,
+    h,
+    12,
+    color
+  );
+
+  lcd.drawRoundRect(
+    x,
+    y,
+    w,
+    h,
+    12,
+    border
+  );
+}
+
+
+// ============================================================
+// LECTURE TACTILE
 // ============================================================
 
 bool touchRead(uint16_t &x, uint16_t &y) {
@@ -169,10 +274,19 @@ bool touchRead(uint16_t &x, uint16_t &y) {
 
 
 // ============================================================
-// CREATION DES BOUTONS RELAIS
+// CREATION DES BOUTONS
 // ============================================================
 
 void makeButtons() {
+
+  const int marginX = 9;
+  const int gapX = 7;
+
+  const int top = 68;
+  const int gapY = 7;
+
+  const int W = 147;
+  const int H = 82;
 
   for (int i = 0; i < 8; i++) {
 
@@ -180,17 +294,20 @@ void makeButtons() {
     int col = i % 2;
 
     b[i] = {
-      10 + col * 155,
-      65 + row * 91,
-      145,
-      82
+
+      marginX + col * (W + gapX),
+
+      top + row * (H + gapY),
+
+      W,
+      H
     };
   }
 }
 
 
 // ============================================================
-// ENVOI COMMANDE RELAIS AU WT32
+// I2C : COMMANDE RELAIS
 // ============================================================
 
 void sendCmd(uint8_t r, bool on) {
@@ -206,12 +323,13 @@ void sendCmd(uint8_t r, bool on) {
 
 
 // ============================================================
-// ENVOI NOM AU WT32
+// I2C : ENVOI NOM
 // ============================================================
 
 void sendName(uint8_t r) {
 
-  uint8_t l = min((int)strlen(names[r]), 17);
+  uint8_t l =
+    min((int)strlen(names[r]), 17);
 
   Wire.beginTransmission(WT32);
 
@@ -219,14 +337,17 @@ void sendName(uint8_t r) {
   Wire.write(r);
   Wire.write(l);
 
-  Wire.write((uint8_t *)names[r], l);
+  Wire.write(
+    (uint8_t *)names[r],
+    l
+  );
 
   Wire.endTransmission();
 }
 
 
 // ============================================================
-// CHARGEMENT DES NOMS
+// CHARGEMENT NOMS
 // ============================================================
 
 void loadNames() {
@@ -236,11 +357,18 @@ void loadNames() {
   for (int i = 0; i < 8; i++) {
 
     String k = String("n") + i;
-    String s = prefs.getString(k.c_str(), "");
+
+    String s =
+      prefs.getString(k.c_str(), "");
 
     if (s.length()) {
 
-      strncpy(names[i], s.c_str(), 17);
+      strncpy(
+        names[i],
+        s.c_str(),
+        17
+      );
+
       names[i][17] = 0;
     }
   }
@@ -248,7 +376,7 @@ void loadNames() {
 
 
 // ============================================================
-// SAUVEGARDE DU NOM
+// SAUVEGARDE NOM
 // ============================================================
 
 void saveName() {
@@ -261,11 +389,14 @@ void saveName() {
   if (!editName.length())
     return;
 
-  // Limite à 17 caractères
   if (editName.length() > 17)
-    editName = editName.substring(0, 17);
+    editName =
+      editName.substring(0, 17);
 
-  editName.toCharArray(names[editIndex], 18);
+  editName.toCharArray(
+    names[editIndex],
+    18
+  );
 
   prefs.putString(
     (String("n") + editIndex).c_str(),
@@ -277,107 +408,234 @@ void saveName() {
 
 
 // ============================================================
-// AFFICHAGE DE L'ECRAN PRINCIPAL
+// PETIT INDICATEUR LED
+// ============================================================
+
+void drawStatusDot(
+  int x,
+  int y,
+  bool active
+) {
+
+  lcd.fillCircle(
+    x,
+    y,
+    5,
+    active ? C_GREEN : C_MUTED
+  );
+
+  lcd.drawCircle(
+    x,
+    y,
+    6,
+    active ? C_GREEN : C_PANEL2
+  );
+}
+
+
+// ============================================================
+// CARTE RELAIS
+// ============================================================
+
+void drawRelay(int i) {
+
+  const B &r = b[i];
+
+  bool on = states[i];
+
+  uint16_t panelColor =
+    on ? C_GREEN_DARK : C_PANEL;
+
+  uint16_t accent =
+    on ? C_GREEN : C_RED;
+
+  // Fond carte
+  lcd.fillRoundRect(
+    r.x,
+    r.y,
+    r.w,
+    r.h,
+    12,
+    panelColor
+  );
+
+  // Bordure
+  lcd.drawRoundRect(
+    r.x,
+    r.y,
+    r.w,
+    r.h,
+    12,
+    accent
+  );
+
+  // Barre verticale d'état
+  lcd.fillRoundRect(
+    r.x,
+    r.y,
+    5,
+    r.h,
+    3,
+    accent
+  );
+
+  // Numéro
+  textCenter(
+    String("R") + String(i + 1),
+    r.x + 22,
+    r.y + 16,
+    1,
+    C_MUTED
+  );
+
+  // Nom
+  String s = names[i];
+
+  if (s.length() > 13)
+    s = s.substring(0, 13);
+
+  int font =
+    s.length() > 10 ? 1 : 2;
+
+  textCenter(
+    s,
+    r.x + r.w / 2,
+    r.y + 31,
+    font,
+    C_WHITE
+  );
+
+  // Etat
+  textCenter(
+    on ? "ON" : "OFF",
+    r.x + r.w / 2,
+    r.y + 60,
+    3,
+    accent
+  );
+}
+
+
+// ============================================================
+// ECRAN PRINCIPAL
 // ============================================================
 
 void draw() {
 
-  lcd.fillScreen(TFT_BLACK);
+  lcd.fillScreen(C_BG);
 
-  // Barre supérieure
+  lcd.setTextDatum(TL_DATUM);
+
+
+  // ----------------------------------------------------------
+  // HEADER
+  // ----------------------------------------------------------
+
   lcd.fillRect(
     0,
     0,
     320,
-    52,
-    TFT_BLACK
+    56,
+    C_PANEL
   );
 
-  lcd.setTextColor(
-    TFT_WHITE,
-    TFT_BLACK
+  // Petit accent
+  lcd.fillRect(
+    0,
+    0,
+    320,
+    3,
+    C_CYAN
   );
 
-  lcd.setTextDatum(MC_DATUM);
+
+  // Icône / statut
+  drawStatusDot(
+    16,
+    25,
+    true
+  );
+
+
+  lcd.setTextColor(C_WHITE);
 
   lcd.drawString(
-    "SWITCH ANTENNA COMMANDER",
-    160,
-    17,
+    "ANTENNA",
+    29,
+    10,
     2
   );
 
+  lcd.setTextColor(C_MUTED);
+
   lcd.drawString(
-    "",
-    160,
-    38,
-    2
+    "COMMANDER",
+    29,
+    30,
+    1
   );
 
-  lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+
+  // Etat système
+  lcd.setTextDatum(MR_DATUM);
+
+  lcd.setTextColor(C_GREEN);
+
+  lcd.drawString(
+    "ONLINE",
+    304,
+    20,
+    1
+  );
+
+  lcd.setTextColor(C_MUTED);
+
+  lcd.drawString(
+    "WT32",
+    304,
+    37,
+    1
+  );
+
+
+  // ----------------------------------------------------------
+  // RELAIS
+  // ----------------------------------------------------------
+
+  for (int i = 0; i < 8; i++)
+    drawRelay(i);
+
+
+  // ----------------------------------------------------------
+  // FOOTER
+  // ----------------------------------------------------------
+
   lcd.setTextDatum(MC_DATUM);
-  lcd.drawString("F4BIT@2026-Copyleft", 160, 465, 2);
-  lcd.setTextDatum(TL_DATUM);
 
-  // Boutons relais
-  for (int i = 0; i < 8; i++) {
+  lcd.setTextColor(C_MUTED);
 
-    uint16_t c =
-      states[i]
-      ? TFT_GREEN
-      : TFT_RED;
+  lcd.drawString(
+    "Appui long : renommer",
+    160,
+    432,
+    1
+  );
 
-    lcd.fillRoundRect(
-      b[i].x,
-      b[i].y,
-      b[i].w,
-      b[i].h,
-      9,
-      c
-    );
+  lcd.setTextColor(C_TEXT);
 
-    lcd.drawRoundRect(
-      b[i].x,
-      b[i].y,
-      b[i].w,
-      b[i].h,
-      9,
-      TFT_WHITE
-    );
-
-    lcd.setTextColor(
-      TFT_WHITE,
-      c
-    );
-
-    lcd.setTextDatum(MC_DATUM);
-
-    String s = names[i];
-
-    if (s.length() > 15)
-      s = s.substring(0, 15);
-
-    lcd.drawString(
-      s,
-      b[i].x + 72,
-      b[i].y + 22,
-      s.length() > 10 ? 1 : 2
-    );
-
-    lcd.drawString(
-      states[i] ? "ON" : "OFF",
-      b[i].x + 72,
-      b[i].y + 58,
-      4
-    );
-  }
+  lcd.drawString(
+    "F4BIT  •  2026",
+    160,
+    462,
+    1
+  );
 
   lcd.setTextDatum(TL_DATUM);
 }
 
 
 // ============================================================
-// LECTURE DES ETATS DES RELAIS
+// LECTURE ETATS RELAIS
 // ============================================================
 
 void readStates() {
@@ -406,50 +664,145 @@ void readStates() {
 
 
 // ============================================================
-// AFFICHAGE DU CLAVIER
+// CLAVIER : TOUCHE
+// ============================================================
+
+void drawKey(
+  int x,
+  int y,
+  int w,
+  int h,
+  String label,
+  uint16_t color = C_KEY
+) {
+
+  lcd.fillRoundRect(
+    x,
+    y,
+    w,
+    h,
+    6,
+    color
+  );
+
+  lcd.drawRoundRect(
+    x,
+    y,
+    w,
+    h,
+    6,
+    C_PANEL2
+  );
+
+  textCenter(
+    label,
+    x + w / 2,
+    y + h / 2,
+    2,
+    C_WHITE
+  );
+}
+
+
+// ============================================================
+// ECRAN CLAVIER
 // ============================================================
 
 void keyboard() {
 
-  lcd.fillScreen(TFT_BLACK);
+  lcd.fillScreen(C_BG);
 
-  lcd.setTextColor(
-    TFT_WHITE,
-    TFT_BLACK
+
+  // ----------------------------------------------------------
+  // HEADER
+  // ----------------------------------------------------------
+
+  lcd.fillRect(
+    0,
+    0,
+    320,
+    32,
+    C_PANEL
   );
 
-  lcd.setTextDatum(TL_DATUM);
+  lcd.fillRect(
+    0,
+    0,
+    320,
+    2,
+    C_CYAN
+  );
+
+  lcd.setTextDatum(ML_DATUM);
+
+  lcd.setTextColor(C_WHITE);
 
   lcd.drawString(
-    "Nouveau nom :",
-    8,
-    8,
+    "RENOMMER LE RELAIS",
+    12,
+    16,
     2
   );
 
-  // Zone du nom
+
+  // ----------------------------------------------------------
+  // CHAMP NOM
+  // ----------------------------------------------------------
+
   lcd.fillRoundRect(
     8,
-    35,
+    39,
     304,
-    42,
-    6,
-    TFT_DARKGREY
+    43,
+    9,
+    C_PANEL
   );
 
-  lcd.setTextDatum(MC_DATUM);
+  lcd.drawRoundRect(
+    8,
+    39,
+    304,
+    43,
+    9,
+    C_BLUE
+  );
+
+  lcd.setTextDatum(ML_DATUM);
+
+  lcd.setTextColor(C_WHITE);
+
+  String displayed = editName;
+
+  if (displayed.length() == 0)
+    displayed = "_";
 
   lcd.drawString(
-    editName,
-    160,
-    56,
+    displayed,
+    18,
+    60,
     2
   );
 
-  // ---------- Touches clavier ----------
 
-  int W = 29;
-  int H = 43;
+  // compteur
+  lcd.setTextDatum(MR_DATUM);
+
+  lcd.setTextColor(C_MUTED);
+
+  lcd.drawString(
+    String(editName.length()) + "/17",
+    302,
+    61,
+    1
+  );
+
+
+  // ----------------------------------------------------------
+  // CLAVIER
+  // ----------------------------------------------------------
+
+  const int W = 29;
+  const int H = 38;
 
   for (int i = 0; i < NKEYS; i++) {
 
@@ -457,106 +810,73 @@ void keyboard() {
     int col = i % 10;
 
     int x = 5 + col * 31;
-    int y = 90 + row * 47;
+    int y = 90 + row * 41;
 
-    lcd.fillRoundRect(
+    drawKey(
       x,
       y,
       W,
       H,
-      5,
-      TFT_NAVY
-    );
-
-    lcd.setTextColor(
-      TFT_WHITE,
-      TFT_NAVY
-    );
-
-    lcd.drawString(
-      String(keys[i]),
-      x + W / 2,
-      y + H / 2,
-      2
+      String(keys[i])
     );
   }
 
-  // ---------- EFFACER ----------
 
-  lcd.fillRoundRect(
+  // ----------------------------------------------------------
+  // ACTIONS
+  // ----------------------------------------------------------
+
+  drawKey(
     8,
-    286,
+    218,
     145,
     42,
-    6,
-    TFT_DARKGREY
-  );
-
-  // ---------- VALIDER ----------
-
-  lcd.fillRoundRect(
-    167,
-    286,
-    145,
-    42,
-    6,
-    TFT_GREEN
-  );
-
-  lcd.setTextColor(TFT_WHITE);
-
-  lcd.drawString(
     "EFFACER",
-    80,
-    307,
-    2
+    C_PANEL2
   );
 
-  lcd.drawString(
-    "VALIDER",
-    239,
-    307,
-    2
-  );
-
-  // ========================================================
-  // NOUVELLES TOUCHES ESPACE / ANNULER
-  // ========================================================
-
-  // ESPACE
-  lcd.fillRoundRect(
-    8,
-    338,
-    145,
-    42,
-    6,
-    TFT_NAVY
-  );
-
-  // ANNULER
-  lcd.fillRoundRect(
+  drawKey(
     167,
-    338,
+    218,
     145,
     42,
-    6,
-    TFT_RED
+    "VALIDER",
+    C_GREEN_DARK
   );
 
-  lcd.setTextColor(TFT_WHITE);
 
-  lcd.drawString(
+  drawKey(
+    8,
+    269,
+    145,
+    42,
     "ESPACE",
-    80,
-    359,
-    2
+    C_KEY
   );
 
-  lcd.drawString(
+  drawKey(
+    167,
+    269,
+    145,
+    42,
     "ANNULER",
-    239,
-    359,
-    2
+    C_RED_DARK
+  );
+
+
+  // ----------------------------------------------------------
+  // FOOTER
+  // ----------------------------------------------------------
+
+  lcd.setTextDatum(MC_DATUM);
+
+  lcd.setTextColor(C_MUTED);
+
+  lcd.drawString(
+    "AZERTY  •  17 caracteres max.",
+    160,
+    330,
+    1
   );
 
   lcd.setTextDatum(TL_DATUM);
@@ -564,31 +884,41 @@ void keyboard() {
 
 
 // ============================================================
-// GESTION DES TOUCHES DU CLAVIER
+// GESTION CLAVIER
 // ============================================================
 
-void editTouch(uint16_t x, uint16_t y) {
+void editTouch(
+  uint16_t x,
+  uint16_t y
+) {
 
-  // ========================================================
-  // TOUCHES CHIFFRES + LETTRES
-  // ========================================================
+  // ----------------------------------------------------------
+  // TOUCHES
+  // ----------------------------------------------------------
 
-  if (y >= 90 && y < 278) {
+  if (
+    y >= 90 &&
+    y < 213
+  ) {
 
-    int row = (y - 90) / 47;
-    int col = (x - 5) / 31;
+    int row =
+      (y - 90) / 41;
 
-    if (col >= 0 && col < 10) {
+    int col =
+      (x - 5) / 31;
 
-      int k = row * 10 + col;
+    if (
+      col >= 0 &&
+      col < 10
+    ) {
+
+      int k =
+        row * 10 + col;
 
       if (k < NKEYS) {
 
-        // Maximum 17 caractères
-        if (editName.length() < 17) {
-
+        if (editName.length() < 17)
           editName += keys[k];
-        }
 
         keyboard();
       }
@@ -598,24 +928,25 @@ void editTouch(uint16_t x, uint16_t y) {
   }
 
 
-  // ========================================================
+  // ----------------------------------------------------------
   // EFFACER / VALIDER
-  // ========================================================
+  // ----------------------------------------------------------
 
-  if (y >= 286 && y < 328) {
+  if (
+    y >= 218 &&
+    y < 260
+  ) {
 
-    // EFFACER
     if (x < 155) {
 
-      if (editName.length()) {
-
+      if (editName.length())
         editName.remove(
           editName.length() - 1
         );
-      }
+
+      keyboard();
     }
 
-    // VALIDER
     else {
 
       saveName();
@@ -623,27 +954,24 @@ void editTouch(uint16_t x, uint16_t y) {
       editing = false;
 
       draw();
-
-      return;
     }
-
-    keyboard();
 
     return;
   }
 
 
-  // ========================================================
+  // ----------------------------------------------------------
   // ESPACE
-  // ========================================================
+  // ----------------------------------------------------------
 
-  if (y >= 338 && y < 380 && x < 155) {
+  if (
+    y >= 269 &&
+    y < 311 &&
+    x < 155
+  ) {
 
-    // Maximum 17 caractères
-    if (editName.length() < 17) {
-
+    if (editName.length() < 17)
       editName += " ";
-    }
 
     keyboard();
 
@@ -651,13 +979,16 @@ void editTouch(uint16_t x, uint16_t y) {
   }
 
 
-  // ========================================================
+  // ----------------------------------------------------------
   // ANNULER
-  // ========================================================
+  // ----------------------------------------------------------
 
-  if (y >= 338 && y < 380 && x >= 155) {
+  if (
+    y >= 269 &&
+    y < 311 &&
+    x >= 155
+  ) {
 
-    // Quitter sans sauvegarder
     editing = false;
 
     draw();
@@ -675,7 +1006,10 @@ void setup() {
 
   Serial.begin(115200);
 
-  // ---------- Rétroéclairage ----------
+
+  // ----------------------------------------------------------
+  // RETROECLAIRAGE
+  // ----------------------------------------------------------
 
   pinMode(
     BACKLIGHT_PIN,
@@ -688,14 +1022,18 @@ void setup() {
   );
 
 
-  // ---------- Ecran ----------
+  // ----------------------------------------------------------
+  // ECRAN
+  // ----------------------------------------------------------
 
   lcd.init();
 
   lcd.setRotation(0);
 
 
-  // ---------- I2C ----------
+  // ----------------------------------------------------------
+  // I2C
+  // ----------------------------------------------------------
 
   Wire.begin(
     I2C_SDA,
@@ -704,27 +1042,33 @@ void setup() {
   );
 
 
-  // ---------- Noms ----------
+  // ----------------------------------------------------------
+  // NOMS
+  // ----------------------------------------------------------
 
   loadNames();
 
   makeButtons();
 
 
-  // ---------- Envoi des noms au WT32 ----------
+  // ----------------------------------------------------------
+  // ENVOI DES NOMS
+  // ----------------------------------------------------------
 
-  for (int i = 0; i < 8; i++) {
-
+  for (int i = 0; i < 8; i++)
     sendName(i);
-  }
 
 
-  // ---------- Lecture des états ----------
+  // ----------------------------------------------------------
+  // ETATS
+  // ----------------------------------------------------------
 
   readStates();
 
 
-  // ---------- Affichage ----------
+  // ----------------------------------------------------------
+  // AFFICHAGE
+  // ----------------------------------------------------------
 
   draw();
 }
@@ -736,17 +1080,22 @@ void setup() {
 
 void loop() {
 
-  // ========================================================
+
+  // ==========================================================
   // MODE EDITION
-  // ========================================================
+  // ==========================================================
 
   if (editing) {
 
     uint16_t x, y;
 
-    bool t = touchRead(x, y);
+    bool t =
+      touchRead(x, y);
 
-    if (t && !wasTouch) {
+    if (
+      t &&
+      !wasTouch
+    ) {
 
       editTouch(x, y);
     }
@@ -759,18 +1108,24 @@ void loop() {
   }
 
 
-  // ========================================================
+  // ==========================================================
   // MODE NORMAL
-  // ========================================================
+  // ==========================================================
 
   uint16_t x, y;
 
-  bool t = touchRead(x, y);
+  bool t =
+    touchRead(x, y);
 
 
-  // ---------- Début d'un appui ----------
+  // ----------------------------------------------------------
+  // DEBUT APPUI
+  // ----------------------------------------------------------
 
-  if (t && !wasTouch) {
+  if (
+    t &&
+    !wasTouch
+  ) {
 
     for (int i = 0; i < 8; i++) {
 
@@ -782,7 +1137,9 @@ void loop() {
       ) {
 
         touchIndex = i;
-        touchStart = millis();
+
+        touchStart =
+          millis();
 
         break;
       }
@@ -790,7 +1147,9 @@ void loop() {
   }
 
 
-  // ---------- Fin d'un appui ----------
+  // ----------------------------------------------------------
+  // FIN APPUI
+  // ----------------------------------------------------------
 
   if (
     !t &&
@@ -802,13 +1161,17 @@ void loop() {
       millis() - touchStart;
 
 
-    // ---------- Appui long : édition ----------
+    // --------------------------------------------------------
+    // APPUI LONG
+    // --------------------------------------------------------
 
     if (d >= 700) {
 
-      editIndex = touchIndex;
+      editIndex =
+        touchIndex;
 
-      editName = names[editIndex];
+      editName =
+        names[editIndex];
 
       editing = true;
 
@@ -816,7 +1179,9 @@ void loop() {
     }
 
 
-    // ---------- Appui court : relais ----------
+    // --------------------------------------------------------
+    // APPUI COURT
+    // --------------------------------------------------------
 
     else {
 
@@ -839,11 +1204,13 @@ void loop() {
   wasTouch = t;
 
 
-  // ========================================================
-  // ACTUALISATION DES ETATS
-  // ========================================================
+  // ==========================================================
+  // ACTUALISATION AUTOMATIQUE
+  // ==========================================================
 
-  if (millis() - lastPoll > 500) {
+  if (
+    millis() - lastPoll > 500
+  ) {
 
     lastPoll = millis();
 
@@ -857,9 +1224,12 @@ void loop() {
 
     readStates();
 
+
     for (int i = 0; i < 8; i++) {
 
-      if (old[i] != states[i]) {
+      if (
+        old[i] != states[i]
+      ) {
 
         draw();
 
