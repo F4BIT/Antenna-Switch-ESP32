@@ -1,7 +1,7 @@
 /******************************************************************
  *  ANTENNA CONTROL CENTER
  *  ESP32-ETH01 / LAN8720 - 8 relais
-*  Auteur :  F4BIT Stéphane
+ *  Auteur :  F4BIT Stéphane
  *  Date   :  2026-09-27
  *  ---------------------------------------------------------------
  *  Fonctionnalités :
