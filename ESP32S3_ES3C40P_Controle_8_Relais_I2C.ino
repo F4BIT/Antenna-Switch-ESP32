@@ -1,11 +1,8 @@
 /* ESP32-S3 + LovyanGFX (ST7796 SPI + tactile FT5x06) + WT32 I2C
-   Les noms sont modifiables sur l'ecran par appui long (700 ms).
-   Les noms sont memorises dans Preferences et envoyes au WT32.
-   Clavier virtuel : chiffres (0-9) + lettres (AZERTY sans accents).
-
-   MODIFICATION :
-   - ESPACE et ANNULER sont maintenant deux touches distinctes.
-*/
+ *  Les noms sont modifiables sur l'ecran par appui long (700 ms).
+ *  Les noms sont memorises dans Preferences et envoyes au WT32.
+ *  Clavier virtuel : chiffres (0-9) + lettres (AZERTY sans accents).
+ */
 
 #define LGFX_USE_V1
 
@@ -304,7 +301,7 @@ void draw() {
   lcd.setTextDatum(MC_DATUM);
 
   lcd.drawString(
-    "COMMANDE RELAIS D'ANTENNES",
+    "SWITCH ANTENNA COMMANDER",
     160,
     17,
     2
