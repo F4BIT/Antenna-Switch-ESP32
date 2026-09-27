@@ -2,7 +2,8 @@
  *  ANTENNA CONTROL CENTER
  *  ESP32-ETH01 / LAN8720 - 8 relais
  *  Auteur :  F4BIT Stéphane
- *  Date   :  2026-09-27
+ *  Date   :  2026-09
+ *  CopyLeft. Sous licence GNU General Public License v3.0
  *  ---------------------------------------------------------------
  *  Fonctionnalités :
  *    - 8 relais à commande active LOW
@@ -54,7 +55,7 @@
  *
  *    0x03, relais, longueur, texte...
  *       Modification du nom d'un relais
- *       Longueur maximale : 17 caractères
+ *       Longueur maximale : 14 caractères
  *
  *    0x04
  *       Demande des 8 noms
