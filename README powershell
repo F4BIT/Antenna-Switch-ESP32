@@ -1,0 +1,60 @@
+******************************************************
+1. Configurer l'adresse IP
+******************************************************
+Dans le début du fichier, modifie :
+
+$ESP_IP = "192.168.1.100"
+
+par l'adresse réelle de ton ESP32, par exemple :
+
+$ESP_IP = "192.168.1.50"
+
+******************************************************
+2. Autoriser PowerShell à exécuter le script
+******************************************************
+Dans PowerShell, tu peux faire :
+
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+
+******************************************************
+Puis lancer :
+******************************************************
+.\antenna.ps1 status
+
+******************************************************
+3. Commandes disponibles
+******************************************************
+# Afficher les 8 relais
+.\antenna.ps1 status
+
+# Relais 1 ON
+.\antenna.ps1 on 1
+
+# Relais 1 OFF
+.\antenna.ps1 off 1
+
+# Relais 4 ON
+.\antenna.ps1 on 4
+
+# Relais 4 OFF
+.\antenna.ps1 off 4
+
+# Inverser le relais 2
+.\antenna.ps1 toggle 2
+
+Le status affiche quelque chose comme :
+
+========================================
+      ANTENNA CONTROL CENTER
+========================================
+
+ESP32 : 192.168.1.50
+
+  R1  Antenne Nord         INACTIF
+  R2  Antenne Sud          ACTIF
+  R3  Relais 3             INACTIF
+  R4  Relais 4             INACTIF
+  R5  Relais 5             INACTIF
+  R6  Relais 6             INACTIF
+  R7  Relais 7             INACTIF
+  R8  Relais 8             INACTIF
