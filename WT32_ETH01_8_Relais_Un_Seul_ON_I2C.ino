@@ -1429,7 +1429,7 @@ h1{
 
 <div class="footer">
   2026 - F4BIT@CopyLeft.
-  Sous licence Creative Commons BY-SA 4.0.
+  Sous licence GNU General Public License v3.0.
 </div>
 
 </div>
