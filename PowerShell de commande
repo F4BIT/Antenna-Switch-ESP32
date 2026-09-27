@@ -1,0 +1,528 @@
+<#
+===============================================================================
+ Antenna Control Center - Windows PowerShell
+-------------------------------------------------------------------------------
+ Commande de l'ESP32-ETH01 par HTTP
+
+ API utilisée :
+   GET /api/state
+   GET /api/set?relay=X&on=0|1
+
+ Exemples :
+   .\antenna.ps1 status
+   .\antenna.ps1 on 1
+   .\antenna.ps1 off 1
+   .\antenna.ps1 toggle 1
+
+ Les relais sont numérotés de 1 à 8 côté utilisateur.
+ L'ESP32 utilise les index 0 à 7.
+===============================================================================
+#>
+
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+# Adresse IP de l'ESP32
+$ESP_IP = "192.168.1.100"
+
+# Port HTTP
+$ESP_PORT = 80
+
+# Timeout réseau en secondes
+$TIMEOUT = 3
+
+# URL de base
+$ESP_URL = "http://$ESP_IP`:$ESP_PORT"
+
+
+# =============================================================================
+# COULEURS
+# =============================================================================
+
+function Write-OK {
+    param([string]$Text)
+    Write-Host $Text -ForegroundColor Green
+}
+
+function Write-WarningText {
+    param([string]$Text)
+    Write-Host $Text -ForegroundColor Yellow
+}
+
+function Write-ErrorText {
+    param([string]$Text)
+    Write-Host $Text -ForegroundColor Red
+}
+
+
+# =============================================================================
+# AIDE
+# =============================================================================
+
+function Show-Usage {
+
+    Write-Host ""
+    Write-Host "Antenna Control Center - commande ESP32" `
+        -ForegroundColor Cyan
+
+    Write-Host ""
+
+    Write-Host "Utilisation :" `
+        -ForegroundColor White
+
+    Write-Host ""
+
+    Write-Host "  .\antenna.ps1 status"
+    Write-Host "      Affiche l'état des 8 relais."
+
+    Write-Host ""
+
+    Write-Host "  .\antenna.ps1 on RELAIS"
+    Write-Host "      Active un relais."
+
+    Write-Host ""
+
+    Write-Host "  .\antenna.ps1 off RELAIS"
+    Write-Host "      Désactive un relais."
+
+    Write-Host ""
+
+    Write-Host "  .\antenna.ps1 toggle RELAIS"
+    Write-Host "      Inverse l'état d'un relais."
+
+    Write-Host ""
+
+    Write-Host "  .\antenna.ps1 ip ADRESSE_IP COMMANDE"
+    Write-Host "      Utilise une autre adresse IP."
+
+    Write-Host ""
+
+    Write-Host "Exemples :" `
+        -ForegroundColor White
+
+    Write-Host ""
+
+    Write-Host "  .\antenna.ps1 status"
+    Write-Host "  .\antenna.ps1 on 1"
+    Write-Host "  .\antenna.ps1 off 1"
+    Write-Host "  .\antenna.ps1 toggle 4"
+
+    Write-Host ""
+
+    Write-Host "  .\antenna.ps1 ip 192.168.1.50 status"
+    Write-Host "  .\antenna.ps1 ip 192.168.1.50 on 3"
+
+    Write-Host ""
+
+    Write-Host "Adresse actuellement configurée : " `
+        -NoNewline
+
+    Write-Host $ESP_URL `
+        -ForegroundColor Cyan
+
+    Write-Host ""
+}
+
+
+# =============================================================================
+# VERIFICATION DU NUMERO DE RELAIS
+# =============================================================================
+
+function Test-RelayNumber {
+
+    param(
+        [string]$Relay
+    )
+
+    if ($Relay -notmatch "^[1-8]$") {
+
+        Write-ErrorText `
+            "Erreur : le relais doit être compris entre 1 et 8."
+
+        exit 1
+    }
+}
+
+
+# =============================================================================
+# TEST DE COMMUNICATION AVEC L'ESP32
+# =============================================================================
+
+function Test-ESPConnection {
+
+    try {
+
+        Invoke-WebRequest `
+            -Uri "$ESP_URL/" `
+            -TimeoutSec $TIMEOUT `
+            -UseBasicParsing `
+            -ErrorAction Stop | Out-Null
+
+        return $true
+
+    }
+    catch {
+
+        Write-ErrorText `
+            "Erreur : ESP32 inaccessible."
+
+        Write-Host ""
+        Write-Host "Adresse testée : $ESP_URL"
+
+        Write-Host ""
+        Write-Host "Vérifie :"
+        Write-Host "  - l'adresse IP"
+        Write-Host "  - le câble Ethernet"
+        Write-Host "  - le réseau"
+        Write-Host "  - que l'ESP32 est démarré"
+
+        return $false
+    }
+}
+
+
+# =============================================================================
+# RECUPERATION DE L'ETAT
+# =============================================================================
+
+function Get-RelayState {
+
+    try {
+
+        $response = Invoke-RestMethod `
+            -Uri "$ESP_URL/api/state" `
+            -Method Get `
+            -TimeoutSec $TIMEOUT `
+            -ErrorAction Stop
+
+        return $response
+
+    }
+    catch {
+
+        Write-ErrorText `
+            "Impossible de récupérer l'état de l'ESP32."
+
+        Write-Host $_.Exception.Message
+
+        exit 1
+    }
+}
+
+
+# =============================================================================
+# AFFICHAGE DE L'ETAT
+# =============================================================================
+
+function Show-Status {
+
+    $state = Get-RelayState
+
+    Write-Host ""
+    Write-Host "========================================" `
+        -ForegroundColor Cyan
+
+    Write-Host "      ANTENNA CONTROL CENTER" `
+        -ForegroundColor Cyan
+
+    Write-Host "========================================" `
+        -ForegroundColor Cyan
+
+    Write-Host ""
+
+    Write-Host "ESP32 : " -NoNewline
+    Write-Host $ESP_IP -ForegroundColor Cyan
+
+    Write-Host ""
+
+    $index = 1
+
+    foreach ($property in $state.PSObject.Properties) {
+
+        $name = $property.Name
+        $value = [bool]$property.Value
+
+        if ($value) {
+
+            Write-Host ("  R{0}  {1,-20} " -f $index, $name) `
+                -NoNewline
+
+            Write-Host "ACTIF" `
+                -ForegroundColor Green
+
+        }
+        else {
+
+            Write-Host ("  R{0}  {1,-20} " -f $index, $name) `
+                -NoNewline
+
+            Write-Host "INACTIF" `
+                -ForegroundColor DarkGray
+        }
+
+        $index++
+    }
+
+    Write-Host ""
+}
+
+
+# =============================================================================
+# COMMANDE D'UN RELAIS
+# =============================================================================
+
+function Set-Relay {
+
+    param(
+        [string]$Relay,
+        [int]$State
+    )
+
+    Test-RelayNumber $Relay
+
+    # Conversion numéro utilisateur 1..8
+    # vers index ESP32 0..7
+    $index = [int]$Relay - 1
+
+    $url = "$ESP_URL/api/set?relay=$index&on=$State"
+
+    try {
+
+        $response = Invoke-RestMethod `
+            -Uri $url `
+            -Method Get `
+            -TimeoutSec $TIMEOUT `
+            -ErrorAction Stop
+
+        if ($State -eq 1) {
+
+            Write-OK `
+                "Relais $Relay activé."
+
+        }
+        else {
+
+            Write-WarningText `
+                "Relais $Relay désactivé."
+        }
+
+        Write-Host ""
+
+    }
+    catch {
+
+        Write-ErrorText `
+            "Erreur de communication avec l'ESP32."
+
+        Write-Host $_.Exception.Message
+
+        exit 1
+    }
+}
+
+
+# =============================================================================
+# TOGGLE
+# =============================================================================
+
+function Toggle-Relay {
+
+    param(
+        [string]$Relay
+    )
+
+    Test-RelayNumber $Relay
+
+    $state = Get-RelayState
+
+    # Récupération du nom et de l'état correspondant
+    $properties = @(
+        $state.PSObject.Properties
+    )
+
+    $index = [int]$Relay - 1
+
+    if ($index -ge $properties.Count) {
+
+        Write-ErrorText `
+            "Impossible de trouver le relais $Relay."
+
+        exit 1
+    }
+
+    $property = $properties[$index]
+
+    $currentState =
+        [bool]$property.Value
+
+    if ($currentState) {
+
+        Set-Relay `
+            -Relay $Relay `
+            -State 0
+
+    }
+    else {
+
+        Set-Relay `
+            -Relay $Relay `
+            -State 1
+    }
+}
+
+
+# =============================================================================
+# ARGUMENTS
+# =============================================================================
+
+if ($args.Count -eq 0) {
+
+    Show-Usage
+    exit 0
+}
+
+
+# =============================================================================
+# OPTION IP
+# =============================================================================
+#
+# Exemple :
+#
+#   .\antenna.ps1 ip 192.168.1.50 status
+#
+# =============================================================================
+
+if ($args[0] -eq "ip") {
+
+    if ($args.Count -lt 3) {
+
+        Write-ErrorText `
+            "Usage : .\antenna.ps1 ip ADRESSE_IP COMMANDE"
+
+        exit 1
+    }
+
+    $ESP_IP = $args[1]
+
+    $ESP_URL =
+        "http://$ESP_IP`:$ESP_PORT"
+
+    # On retire "ip" et l'adresse IP
+    $args = $args[2..($args.Count - 1)]
+}
+
+
+# =============================================================================
+# TRAITEMENT DES COMMANDES
+# =============================================================================
+
+$command = $args[0].ToLower()
+
+
+switch ($command) {
+
+    # -------------------------------------------------------------------------
+    # STATUS
+    # -------------------------------------------------------------------------
+
+    "status" {
+
+        Show-Status
+    }
+
+
+    # -------------------------------------------------------------------------
+    # ON
+    # -------------------------------------------------------------------------
+
+    "on" {
+
+        if ($args.Count -ne 2) {
+
+            Write-Host `
+                "Usage : .\antenna.ps1 on RELAIS"
+
+            exit 1
+        }
+
+        Set-Relay `
+            -Relay $args[1] `
+            -State 1
+    }
+
+
+    # -------------------------------------------------------------------------
+    # OFF
+    # -------------------------------------------------------------------------
+
+    "off" {
+
+        if ($args.Count -ne 2) {
+
+            Write-Host `
+                "Usage : .\antenna.ps1 off RELAIS"
+
+            exit 1
+        }
+
+        Set-Relay `
+            -Relay $args[1] `
+            -State 0
+    }
+
+
+    # -------------------------------------------------------------------------
+    # TOGGLE
+    # -------------------------------------------------------------------------
+
+    "toggle" {
+
+        if ($args.Count -ne 2) {
+
+            Write-Host `
+                "Usage : .\antenna.ps1 toggle RELAIS"
+
+            exit 1
+        }
+
+        Toggle-Relay `
+            -Relay $args[1]
+    }
+
+
+    # -------------------------------------------------------------------------
+    # HELP
+    # -------------------------------------------------------------------------
+
+    "help" {
+
+        Show-Usage
+    }
+
+    "-h" {
+
+        Show-Usage
+    }
+
+    "--help" {
+
+        Show-Usage
+    }
+
+
+    # -------------------------------------------------------------------------
+    # COMMANDE INCONNUE
+    # -------------------------------------------------------------------------
+
+    default {
+
+        Write-ErrorText `
+            "Commande inconnue : $command"
+
+        Show-Usage
+
+        exit 1
+    }
+}
