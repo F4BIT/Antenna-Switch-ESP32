@@ -1,0 +1,41 @@
+Enregistre-le par exemple sous :
+
+nano antenna.sh
+
+Puis :
+
+chmod +x antenna.sh
+
+Si ton ESP32 a par exemple l'adresse 192.168.1.50 :
+
+./antenna.sh ip 192.168.1.50 status
+
+Pour éviter de préciser l'adresse à chaque fois :
+
+export ESP_IP=192.168.1.50
+
+Puis :
+
+./antenna.sh status
+Commandes principales
+# Etat des 8 relais
+./antenna.sh status
+
+# Relais 1 ON
+./antenna.sh on 1
+
+# Relais 1 OFF
+./antenna.sh off 1
+
+# Relais 4 ON
+./antenna.sh on 4
+
+# Relais 4 OFF
+./antenna.sh off 4
+
+# Inverser le relais 2
+./antenna.sh toggle 2
+
+Le numéro présenté par le script est 1 à 8, alors que l'ESP32 reçoit bien 0 à 7 dans son API.
+
+À noter : comme ton ESP32 impose déjà un seul relais actif à la fois, une commande on d'un relais éteindra automatiquement les autres relais actifs.
