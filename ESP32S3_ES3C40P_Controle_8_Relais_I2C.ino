@@ -1,17 +1,17 @@
  /******************************************************************
  *  ANTENNA CONTROL CENTER
- * ESP32-S3 + LovyanGFX
- * ST7796 SPI + tactile FT5x06 + WT32 I2C
- *  Auteur :  F4BIT Stéphane
- *  Date   :  2026-09-27
- * INTERFACE MODERNE - DARK DASHBOARD
- * Appui court  : ON / OFF
- * Appui long   : modifier le nom (700 ms)
+ *  ESP32-S3 + LovyanGFX
+ *  ST7796 SPI + tactile FT5x06 + WT32 I2C
+ *  Auteur : F4BIT Stéphane
+ *  Date   : 2026-09
+ *  CopyLeft. Sous licence GNU General Public License v3.0
+ *  Appui court  : ON / OFF
+ *  Appui long   : modifier le nom (700 ms)
  *
- * Noms mémorisés dans Preferences
- * Noms envoyés au WT32
- * Clavier virtuel AZERTY + chiffres
- * ============================================================ */
+ *  Noms mémorisés dans Preferences
+ *  Noms envoyés a l'ESP32-ETH01
+ *  Clavier virtuel AZERTY + chiffres
+ ******************************************************************/
 
 #define LGFX_USE_V1
 
@@ -19,6 +19,7 @@
 #include <Wire.h>
 #include <Preferences.h>
 #include <LovyanGFX.hpp>
+
 
 // ============================================================
 // ECRAN
@@ -112,14 +113,17 @@ const uint8_t WT32 = 0x12;
 const int I2C_SDA = 16;
 const int I2C_SCL = 15;
 
+// Longueur maximale d'un nom
+const uint8_t MAX_NAME_LEN = 14;
+
 
 // ============================================================
 // PALETTE MODERNE
 // ============================================================
 
-#define C_BG          0x1082   // fond bleu très sombre
-#define C_PANEL       0x18E3   // panneau
-#define C_PANEL2      0x2128   // panneau secondaire
+#define C_BG          0x1082
+#define C_PANEL       0x18E3
+#define C_PANEL2      0x2128
 
 #define C_WHITE       0xFFFF
 #define C_TEXT        0xE73C
@@ -144,7 +148,7 @@ const int I2C_SCL = 15;
 // RELAIS
 // ============================================================
 
-char names[8][18] = {
+char names[8][MAX_NAME_LEN + 1] = {
 
   "Relais 1",
   "Relais 2",
@@ -329,7 +333,10 @@ void sendCmd(uint8_t r, bool on) {
 void sendName(uint8_t r) {
 
   uint8_t l =
-    min((int)strlen(names[r]), 17);
+    min(
+      (int)strlen(names[r]),
+      (int)MAX_NAME_LEN
+    );
 
   Wire.beginTransmission(WT32);
 
@@ -366,10 +373,10 @@ void loadNames() {
       strncpy(
         names[i],
         s.c_str(),
-        17
+        MAX_NAME_LEN
       );
 
-      names[i][17] = 0;
+      names[i][MAX_NAME_LEN] = 0;
     }
   }
 }
@@ -389,13 +396,13 @@ void saveName() {
   if (!editName.length())
     return;
 
-  if (editName.length() > 17)
+  if (editName.length() > MAX_NAME_LEN)
     editName =
-      editName.substring(0, 17);
+      editName.substring(0, MAX_NAME_LEN);
 
   editName.toCharArray(
     names[editIndex],
-    18
+    MAX_NAME_LEN + 1
   );
 
   prefs.putString(
@@ -449,7 +456,11 @@ void drawRelay(int i) {
   uint16_t accent =
     on ? C_GREEN : C_RED;
 
+
+  // ----------------------------------------------------------
   // Fond carte
+  // ----------------------------------------------------------
+
   lcd.fillRoundRect(
     r.x,
     r.y,
@@ -459,7 +470,11 @@ void drawRelay(int i) {
     panelColor
   );
 
+
+  // ----------------------------------------------------------
   // Bordure
+  // ----------------------------------------------------------
+
   lcd.drawRoundRect(
     r.x,
     r.y,
@@ -469,33 +484,18 @@ void drawRelay(int i) {
     accent
   );
 
-  // Barre verticale d'état
-  lcd.fillRoundRect(
-    r.x,
-    r.y,
-    5,
-    r.h,
-    3,
-    accent
-  );
 
-  // Numéro
-  textCenter(
-    String("R") + String(i + 1),
-    r.x + 22,
-    r.y + 16,
-    1,
-    C_MUTED
-  );
-
+  // ----------------------------------------------------------
   // Nom
+  // ----------------------------------------------------------
+
   String s = names[i];
 
-  if (s.length() > 13)
-    s = s.substring(0, 13);
+  if (s.length() > MAX_NAME_LEN)
+    s = s.substring(0, MAX_NAME_LEN);
 
   int font =
-    s.length() > 10 ? 1 : 2;
+    s.length() > 11 ? 1 : 2;
 
   textCenter(
     s,
@@ -505,7 +505,11 @@ void drawRelay(int i) {
     C_WHITE
   );
 
+
+  // ----------------------------------------------------------
   // Etat
+  // ----------------------------------------------------------
+
   textCenter(
     on ? "ON" : "OFF",
     r.x + r.w / 2,
@@ -531,70 +535,12 @@ void draw() {
   // HEADER
   // ----------------------------------------------------------
 
-  lcd.fillRect(
-    0,
-    0,
-    320,
-    56,
-    C_PANEL
-  );
-
-  // Petit accent
-  lcd.fillRect(
-    0,
-    0,
-    320,
-    3,
-    C_CYAN
-  );
-
-
-  // Icône / statut
-  drawStatusDot(
-    16,
-    25,
-    true
-  );
-
-
-  lcd.setTextColor(C_WHITE);
-
-  lcd.drawString(
-    "ANTENNA",
-    29,
-    10,
-    2
-  );
-
-  lcd.setTextColor(C_MUTED);
-
-  lcd.drawString(
-    "COMMANDER",
-    29,
-    30,
-    1
-  );
-
-
-  // Etat système
-  lcd.setTextDatum(MR_DATUM);
-
-  lcd.setTextColor(C_GREEN);
-
-  lcd.drawString(
-    "ONLINE",
-    304,
-    20,
-    1
-  );
-
-  lcd.setTextColor(C_MUTED);
-
-  lcd.drawString(
-    "WT32",
-    304,
-    37,
-    1
+  textCenter(
+    "ANTENNA CONTROL CENTER",
+    lcd.width() / 2,
+    28,
+    2,
+    C_WHITE
   );
 
 
@@ -616,7 +562,7 @@ void draw() {
 
   lcd.drawString(
     "Appui long : renommer",
-    160,
+    lcd.width() / 2,
     432,
     1
   );
@@ -624,9 +570,9 @@ void draw() {
   lcd.setTextColor(C_TEXT);
 
   lcd.drawString(
-    "F4BIT  •  2026",
-    160,
-    462,
+    "F4BIT@2026",
+    lcd.width() / 2,
+    lcd.height() - 18,
     1
   );
 
@@ -717,29 +663,13 @@ void keyboard() {
   // HEADER
   // ----------------------------------------------------------
 
-  lcd.fillRect(
-    0,
-    0,
-    320,
-    32,
-    C_PANEL
-  );
-
-  lcd.fillRect(
-    0,
-    0,
-    320,
-    2,
-    C_CYAN
-  );
-
-  lcd.setTextDatum(ML_DATUM);
+  lcd.setTextDatum(MC_DATUM);
 
   lcd.setTextColor(C_WHITE);
 
   lcd.drawString(
-    "RENOMMER LE RELAIS",
-    12,
+    "RENOMMER LES BOUTONS",
+    lcd.width() / 2,
     16,
     2
   );
@@ -784,13 +714,16 @@ void keyboard() {
   );
 
 
-  // compteur
+  // ----------------------------------------------------------
+  // COMPTEUR
+  // ----------------------------------------------------------
+
   lcd.setTextDatum(MR_DATUM);
 
   lcd.setTextColor(C_MUTED);
 
   lcd.drawString(
-    String(editName.length()) + "/17",
+    String(editName.length()) + "/" + String(MAX_NAME_LEN),
     302,
     61,
     1
@@ -810,7 +743,9 @@ void keyboard() {
     int col = i % 10;
 
     int x = 5 + col * 31;
-    int y = 90 + row * 41;
+
+    // +10 pixels
+    int y = 100 + row * 41;
 
     drawKey(
       x,
@@ -828,58 +763,40 @@ void keyboard() {
 
   drawKey(
     8,
-    218,
+    350,
     145,
-    42,
+    38,
     "EFFACER",
-    C_PANEL2
+    C_ORANGE
   );
 
   drawKey(
     167,
-    218,
+    350,
     145,
-    42,
+    38,
     "VALIDER",
     C_GREEN_DARK
   );
 
-
   drawKey(
     8,
-    269,
+    395,
     145,
-    42,
+    38,
     "ESPACE",
-    C_KEY
+    C_BLUE
   );
 
   drawKey(
     167,
-    269,
+    395,
     145,
-    42,
+    38,
     "ANNULER",
     C_RED_DARK
   );
 
-
-  // ----------------------------------------------------------
-  // FOOTER
-  // ----------------------------------------------------------
-
-  lcd.setTextDatum(MC_DATUM);
-
-  lcd.setTextColor(C_MUTED);
-
-  lcd.drawString(
-    "AZERTY  •  17 caracteres max.",
-    160,
-    330,
-    1
-  );
-
-  lcd.setTextDatum(TL_DATUM);
 }
 
 
@@ -892,17 +809,18 @@ void editTouch(
   uint16_t y
 ) {
 
+
   // ----------------------------------------------------------
-  // TOUCHES
+  // TOUCHES AZERTY + CHIFFRES
   // ----------------------------------------------------------
 
   if (
-    y >= 90 &&
-    y < 213
+    y >= 100 &&
+    y < 223
   ) {
 
     int row =
-      (y - 90) / 41;
+      (y - 100) / 41;
 
     int col =
       (x - 5) / 31;
@@ -917,7 +835,7 @@ void editTouch(
 
       if (k < NKEYS) {
 
-        if (editName.length() < 17)
+        if (editName.length() < MAX_NAME_LEN)
           editName += keys[k];
 
         keyboard();
@@ -933,12 +851,13 @@ void editTouch(
   // ----------------------------------------------------------
 
   if (
-    y >= 218 &&
-    y < 260
+    y >= 350 &&
+    y < 388
   ) {
 
     if (x < 155) {
 
+      // EFFACER
       if (editName.length())
         editName.remove(
           editName.length() - 1
@@ -949,6 +868,7 @@ void editTouch(
 
     else {
 
+      // VALIDER
       saveName();
 
       editing = false;
@@ -965,12 +885,12 @@ void editTouch(
   // ----------------------------------------------------------
 
   if (
-    y >= 269 &&
-    y < 311 &&
+    y >= 395 &&
+    y < 433 &&
     x < 155
   ) {
 
-    if (editName.length() < 17)
+    if (editName.length() < MAX_NAME_LEN)
       editName += " ";
 
     keyboard();
@@ -984,8 +904,8 @@ void editTouch(
   // ----------------------------------------------------------
 
   if (
-    y >= 269 &&
-    y < 311 &&
+    y >= 395 &&
+    y < 433 &&
     x >= 155
   ) {
 
