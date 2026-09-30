@@ -1,11 +1,11 @@
- /******************************************************************
+/******************************************************************
  *  ANTENNA CONTROL CENTER  -  VERSION VERTICAL (320 x 480)
  *  ESP32-S3 + LovyanGFX
  *  ST7796 SPI + tactile FT5x06 + WT32 I2C
  *  Auteur : F4BIT Stéphane
  *  Date   : 2026-09
  *  CopyLeft. Sous licence GNU General Public License v3.0
- *  Appui court  : ON / OFF
+ *  Appui court  : commuter le relais
  *  Appui long   : modifier le nom (700 ms)
  *
  *  Noms mémorisés dans Preferences
@@ -486,7 +486,7 @@ void drawRelay(int i) {
 
 
   // ----------------------------------------------------------
-  // Nom
+  // Nom (centré ; l'état est indiqué par la couleur de la carte)
   // ----------------------------------------------------------
 
   String s = names[i];
@@ -500,22 +500,9 @@ void drawRelay(int i) {
   textCenter(
     s,
     r.x + r.w / 2,
-    r.y + 31,
+    r.y + r.h / 2,
     font,
     C_WHITE
-  );
-
-
-  // ----------------------------------------------------------
-  // Etat
-  // ----------------------------------------------------------
-
-  textCenter(
-    on ? "ON" : "OFF",
-    r.x + r.w / 2,
-    r.y + 60,
-    3,
-    accent
   );
 }
 
@@ -561,16 +548,7 @@ void draw() {
   lcd.setTextColor(C_MUTED);
 
   lcd.drawString(
-    "Appui long : renommer",
-    lcd.width() / 2,
-    432,
-    1
-  );
-
-  lcd.setTextColor(C_TEXT);
-
-  lcd.drawString(
-    "F4BIT@2026",
+    "F4BIT@2026 GNU General Public License v3.0",
     lcd.width() / 2,
     lcd.height() - 18,
     1
