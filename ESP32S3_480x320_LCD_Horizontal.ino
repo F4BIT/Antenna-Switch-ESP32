@@ -577,16 +577,7 @@ void draw() {
   lcd.setTextColor(C_MUTED);
 
   lcd.drawString(
-    "Appui long : renommer",
-    lcd.width() / 2,
-    280,
-    1
-  );
-
-  lcd.setTextColor(C_TEXT);
-
-  lcd.drawString(
-    "F4BIT@2026",
+    "F4BIT@2026 GNU General Public License v3.0",
     lcd.width() / 2,
     lcd.height() - 16,
     1
