@@ -1,5 +1,5 @@
  /******************************************************************
- *  ANTENNA CONTROL CENTER
+ *  ANTENNA CONTROL CENTER  -  VERSION VERTICAL (320 x 480)
  *  ESP32-S3 + LovyanGFX
  *  ST7796 SPI + tactile FT5x06 + WT32 I2C
  *  Auteur : F4BIT Stéphane
