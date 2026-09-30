@@ -816,7 +816,7 @@ void editTouch(
 
   if (
     y >= 100 &&
-    y < 223
+    y < 264
   ) {
 
     int row =
