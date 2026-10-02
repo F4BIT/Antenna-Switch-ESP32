@@ -1,0 +1,517 @@
+/*
+ * ============================================================
+ * ANTENNA CONTROL CENTER - ESP32 RELAY V2
+ * Arduino ESP32 Core 2.0.17
+ * ============================================================
+ *
+ * I2C SLAVE
+ * Address : 0x12
+ * SDA     : GPIO 32
+ * SCL     : GPIO 33
+ * Speed   : 100 kHz
+ *
+ * RELAYS : 8
+ * Pins   : 4,5,17,19,21,22,25,26
+ *
+ * Protocol:
+ *
+ * 0x01, relay, state
+ *      relay = 0..7
+ *      state = 0/1
+ *
+ * 0x02
+ *      request 8 relay states
+ *
+ * 0x03, relay, length, chars...
+ *      set relay name
+ *
+ * 0x04
+ *      request all names
+ *      response = 8 * 15 = 120 bytes
+ *
+ * Names:
+ *      max 14 chars + '\0'
+ *
+ * ============================================================
+ */
+
+#include <Arduino.h>
+#include <Wire.h>
+#include <Preferences.h>
+
+// ------------------------------------------------------------
+// Configuration
+// ------------------------------------------------------------
+
+#define I2C_ADDRESS       0x12
+#define I2C_SDA           32
+#define I2C_SCL           33
+#define I2C_SPEED         100000
+
+#define RELAY_COUNT       8
+#define MAX_NAME_LEN      14
+#define NAME_SLOT_LEN     (MAX_NAME_LEN + 1)
+
+const uint8_t relayPins[RELAY_COUNT] = {
+  4, 5, 17, 19, 21, 22, 25, 26
+};
+
+// ------------------------------------------------------------
+// I2C protocol
+// ------------------------------------------------------------
+
+#define CMD_SET_RELAY     0x01
+#define CMD_GET_STATES    0x02
+#define CMD_SET_NAME      0x03
+#define CMD_GET_NAMES     0x04
+
+// ------------------------------------------------------------
+// Relay state
+// ------------------------------------------------------------
+
+volatile bool relayState[RELAY_COUNT] = { false };
+
+// ------------------------------------------------------------
+// Names
+// ------------------------------------------------------------
+
+Preferences prefs;
+
+char relayNames[RELAY_COUNT][NAME_SLOT_LEN];
+
+// ------------------------------------------------------------
+// I2C RX FIFO
+// ------------------------------------------------------------
+
+#define RX_QUEUE_SIZE     8
+#define RX_BUFFER_SIZE    32
+
+struct I2CCommand {
+  uint8_t len;
+  uint8_t data[RX_BUFFER_SIZE];
+};
+
+volatile I2CCommand rxQueue[RX_QUEUE_SIZE];
+volatile uint8_t rxHead = 0;
+volatile uint8_t rxTail = 0;
+
+portMUX_TYPE rxMux = portMUX_INITIALIZER_UNLOCKED;
+portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
+
+// ------------------------------------------------------------
+// Response requested by I2C master
+// ------------------------------------------------------------
+
+enum ResponseType {
+  RESPONSE_STATES = 0,
+  RESPONSE_NAMES  = 1
+};
+
+volatile uint8_t responseType = RESPONSE_STATES;
+
+// ------------------------------------------------------------
+// Relay functions
+// ------------------------------------------------------------
+
+void writeRelayHardware(uint8_t index, bool on)
+{
+  if (index >= RELAY_COUNT) return;
+
+  // Active LOW relay
+  digitalWrite(relayPins[index], on ? LOW : HIGH);
+}
+
+void setRelay(uint8_t index, bool on)
+{
+  if (index >= RELAY_COUNT) return;
+
+  portENTER_CRITICAL(&stateMux);
+
+  if (on) {
+    // Only one relay can be ON
+    for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+      relayState[i] = (i == index);
+    }
+  } else {
+    relayState[index] = false;
+  }
+
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+    writeRelayHardware(i, relayState[i]);
+  }
+
+  portEXIT_CRITICAL(&stateMux);
+}
+
+void allRelaysOff()
+{
+  portENTER_CRITICAL(&stateMux);
+
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+    relayState[i] = false;
+    writeRelayHardware(i, false);
+  }
+
+  portEXIT_CRITICAL(&stateMux);
+}
+
+// ------------------------------------------------------------
+// Preferences / names
+// ------------------------------------------------------------
+
+void loadNames()
+{
+  prefs.begin("relays", true);
+
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+
+    String key = "n" + String(i);
+    String value = prefs.getString(key.c_str(), "");
+
+    value.trim();
+
+    if (value.length() > MAX_NAME_LEN) {
+      value = value.substring(0, MAX_NAME_LEN);
+    }
+
+    memset(relayNames[i], 0, NAME_SLOT_LEN);
+    value.toCharArray(relayNames[i], NAME_SLOT_LEN);
+  }
+
+  prefs.end();
+
+  // Default names
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+    if (relayNames[i][0] == '\0') {
+      snprintf(
+        relayNames[i],
+        NAME_SLOT_LEN,
+        "RELAIS %u",
+        i + 1
+      );
+    }
+  }
+}
+
+void saveName(uint8_t index, const char *name)
+{
+  if (index >= RELAY_COUNT) return;
+
+  char cleanName[NAME_SLOT_LEN];
+
+  memset(cleanName, 0, sizeof(cleanName));
+
+  strncpy(
+    cleanName,
+    name,
+    MAX_NAME_LEN
+  );
+
+  cleanName[MAX_NAME_LEN] = '\0';
+
+  String value = String(cleanName);
+  value.trim();
+
+  value.toCharArray(
+    relayNames[index],
+    NAME_SLOT_LEN
+  );
+
+  prefs.begin("relays", false);
+
+  String key = "n" + String(index);
+  prefs.putString(key.c_str(), relayNames[index]);
+
+  prefs.end();
+}
+
+// ------------------------------------------------------------
+// I2C receive callback
+//
+// IMPORTANT:
+// No Preferences.
+// No String.
+// No Serial.
+// No GPIO.
+// Only copy bytes into FIFO.
+// ------------------------------------------------------------
+
+void onReceive(int count)
+{
+  if (count <= 0) return;
+
+  uint8_t temp[RX_BUFFER_SIZE];
+  uint8_t len = 0;
+
+  while (Wire.available()) {
+
+    int value = Wire.read();
+
+    if (value < 0) continue;
+
+    if (len < RX_BUFFER_SIZE) {
+      temp[len++] = (uint8_t)value;
+    }
+  }
+
+  if (len == 0) return;
+
+  portENTER_CRITICAL_ISR(&rxMux);
+
+  uint8_t next = (rxHead + 1) % RX_QUEUE_SIZE;
+
+  if (next != rxTail) {
+
+    rxQueue[rxHead].len = len;
+
+    for (uint8_t i = 0; i < len; i++) {
+      rxQueue[rxHead].data[i] = temp[i];
+    }
+
+    rxHead = next;
+  }
+
+  // This information is needed immediately by onRequest().
+  if (temp[0] == CMD_GET_STATES) {
+    responseType = RESPONSE_STATES;
+  }
+  else if (temp[0] == CMD_GET_NAMES) {
+    responseType = RESPONSE_NAMES;
+  }
+
+  portEXIT_CRITICAL_ISR(&rxMux);
+}
+
+// ------------------------------------------------------------
+// I2C request callback
+//
+// Only prepares a response from cached data.
+// ------------------------------------------------------------
+
+void onRequest()
+{
+  uint8_t type;
+
+  portENTER_CRITICAL_ISR(&rxMux);
+  type = responseType;
+  portEXIT_CRITICAL_ISR(&rxMux);
+
+  if (type == RESPONSE_NAMES) {
+
+    uint8_t output[RELAY_COUNT * NAME_SLOT_LEN];
+
+    memset(output, 0, sizeof(output));
+
+    for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+      memcpy(
+        &output[i * NAME_SLOT_LEN],
+        relayNames[i],
+        NAME_SLOT_LEN
+      );
+    }
+
+    Wire.write(
+      output,
+      sizeof(output)
+    );
+
+    return;
+  }
+
+  // Default = states
+  uint8_t states[RELAY_COUNT];
+
+  portENTER_CRITICAL_ISR(&stateMux);
+
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+    states[i] = relayState[i] ? 1 : 0;
+  }
+
+  portEXIT_CRITICAL_ISR(&stateMux);
+
+  Wire.write(
+    states,
+    RELAY_COUNT
+  );
+}
+
+// ------------------------------------------------------------
+// Process one queued command
+// ------------------------------------------------------------
+
+bool getNextCommand(I2CCommand &cmd)
+{
+  bool available = false;
+
+  portENTER_CRITICAL(&rxMux);
+
+  if (rxTail != rxHead) {
+
+    cmd.len = rxQueue[rxTail].len;
+
+    for (uint8_t i = 0; i < cmd.len; i++) {
+      cmd.data[i] = rxQueue[rxTail].data[i];
+    }
+
+    rxTail = (rxTail + 1) % RX_QUEUE_SIZE;
+
+    available = true;
+  }
+
+  portEXIT_CRITICAL(&rxMux);
+
+  return available;
+}
+
+// ------------------------------------------------------------
+// Process I2C commands
+// ------------------------------------------------------------
+
+void processI2C()
+{
+  I2CCommand cmd;
+
+  while (getNextCommand(cmd)) {
+
+    if (cmd.len == 0) continue;
+
+    uint8_t command = cmd.data[0];
+
+    // --------------------------------------------------------
+    // SET RELAY
+    // --------------------------------------------------------
+
+    if (command == CMD_SET_RELAY) {
+
+      if (cmd.len >= 3) {
+
+        uint8_t relay = cmd.data[1];
+        bool state = cmd.data[2] != 0;
+
+        if (relay < RELAY_COUNT) {
+          setRelay(relay, state);
+        }
+      }
+    }
+
+    // --------------------------------------------------------
+    // SET NAME
+    // --------------------------------------------------------
+
+    else if (command == CMD_SET_NAME) {
+
+      if (cmd.len >= 3) {
+
+        uint8_t relay = cmd.data[1];
+        uint8_t length = cmd.data[2];
+
+        if (relay < RELAY_COUNT) {
+
+          if (length > MAX_NAME_LEN) {
+            length = MAX_NAME_LEN;
+          }
+
+          if ((3 + length) <= cmd.len) {
+
+            char name[NAME_SLOT_LEN];
+
+            memset(name, 0, sizeof(name));
+
+            memcpy(
+              name,
+              &cmd.data[3],
+              length
+            );
+
+            name[MAX_NAME_LEN] = '\0';
+
+            saveName(
+              relay,
+              name
+            );
+          }
+        }
+      }
+    }
+
+    // --------------------------------------------------------
+    // GET STATES
+    //
+    // Nothing to do here.
+    // onReceive() already selected response type.
+    // --------------------------------------------------------
+
+    else if (command == CMD_GET_STATES) {
+      // Nothing
+    }
+
+    // --------------------------------------------------------
+    // GET NAMES
+    // --------------------------------------------------------
+
+    else if (command == CMD_GET_NAMES) {
+      // Nothing
+    }
+  }
+}
+
+// ------------------------------------------------------------
+// Setup
+// ------------------------------------------------------------
+
+void setup()
+{
+  Serial.begin(115200);
+
+  // Relay outputs
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+
+    pinMode(
+      relayPins[i],
+      OUTPUT
+    );
+
+    // Active LOW => HIGH = OFF
+    digitalWrite(
+      relayPins[i],
+      HIGH
+    );
+  }
+
+  allRelaysOff();
+
+  loadNames();
+
+  // I2C slave
+  Wire.begin(
+    I2C_ADDRESS,
+    I2C_SDA,
+    I2C_SCL,
+    I2C_SPEED
+  );
+
+  Wire.onReceive(onReceive);
+  Wire.onRequest(onRequest);
+
+  Serial.println();
+  Serial.println("================================");
+  Serial.println(" ANTENNA CONTROL - RELAY V2");
+  Serial.println("================================");
+  Serial.println("I2C address : 0x12");
+  Serial.println("I2C SDA     : GPIO32");
+  Serial.println("I2C SCL     : GPIO33");
+  Serial.println("Relays      : 8");
+  Serial.println("Names       : 14 chars");
+  Serial.println();
+}
+
+// ------------------------------------------------------------
+// Loop
+// ------------------------------------------------------------
+
+void loop()
+{
+  processI2C();
+
+  delay(2);
+}
