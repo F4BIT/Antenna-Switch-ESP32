@@ -1,802 +1,951 @@
 /******************************************************************
  *  ANTENNA CONTROL CENTER
- *  ESP32-ETH01 / LAN8720 - 8 relais
+ *  ESP32-ETH01 / LAN8720 
  *  Auteur :  F4BIT Stéphane
  *  Date   :  2026-09
  *  CopyLeft. Sous licence GNU General Public License v3.0
  *  ---------------------------------------------------------------
- *  Fonctionnalités :
- *    - 8 relais à commande active LOW
- *    - Commande locale par I2C
- *    - Serveur Web sur Ethernet
- *    - API REST simple pour commander les relais
- *    - Noms des relais mémorisés en mémoire non volatile
- *    - Un seul relais actif à la fois
- *    - Interface Web responsive PC / tablette / smartphone
- *
- *  Compatibilité :
- *    - ESP32 Arduino Core 2.0.17
- *
- *  Ethernet :
- *    - PHY      : LAN8720
- *    - Adresse  : 1
- *    - MDC      : GPIO 23
- *    - MDIO     : GPIO 18
- *    - POWER    : GPIO 16
- *    - CLK      : GPIO 0
- *
- *  Relais :
- *    R1 : GPIO 4
- *    R2 : GPIO 5
- *    R3 : GPIO 17
- *    R4 : GPIO 19
- *    R5 : GPIO 21
- *    R6 : GPIO 22
- *    R7 : GPIO 25
- *    R8 : GPIO 26
- *
- *  I2C :
- *    - ESP32 en esclave
- *    - Adresse : 0x12
- *    - SDA     : GPIO 32
- *    - SCL     : GPIO 33
- *    - Vitesse : 100 kHz
- *
- *  Protocole I2C :
- *
- *    0x01, relais, état
- *       Commande d'un relais
- *       état = 0 : OFF
- *       état = 1 : ON
- *
- *    0x02
- *       Demande de l'état des 8 relais
- *       Réponse : 8 octets
- *
- *    0x03, relais, longueur, texte...
- *       Modification du nom d'un relais
- *       Longueur maximale : 14 caractères
- *
- *    0x04
- *       Demande des 8 noms
- *       Réponse : 144 octets
- *       8 noms de 18 octets chacun
- *
- *  API Web :
- *
- *    GET /
- *       Interface graphique
- *
- *    GET /api/state
- *       Retourne l'état des 8 relais au format JSON
- *
- *    GET /api/set?relay=0&on=1
- *       Active le relais 1
- *
- *    GET /api/set?relay=0&on=0
- *       Désactive le relais 1
- *
- ********************************************************************/
+  I2C #1 : LCD S3 <-> ETH01
+    ETH01 = esclave 0x12
+    SDA = GPIO32
+    SCL = GPIO33
+    100 kHz
+
+  I2C #2 : ETH01 <-> ESP32 Relais
+    ETH01 = maître
+    SDA = GPIO27
+    SCL = GPIO14
+    100 kHz
+
+  Ethernet :
+    LAN8720
+    PHY Address = 1
+    MDC  = GPIO23
+    MDIO = GPIO18
+    POWER = GPIO16
+    CLOCK = GPIO0
+    Hostname = Antenna_Relay_Ctrl
+
+  WebServer :
+    Port 80
+
+  Protocole I2C ETH01 <-> LCD :
+
+    0x01, relay, state
+      -> commande relais
+
+    0x02
+      -> demande état des 8 relais
+
+    0x03, relay, length, text...
+      -> changement nom relais
+
+    0x04
+      -> demande des 8 noms
+
+    0x05
+      -> demande adresse IP Ethernet
+
+  Compatible Arduino ESP32 Core 2.0.17
+*/
 
 #include <Arduino.h>
-#include <WiFi.h>
-#include <ETH.h>
 #include <Wire.h>
-#include <WebServer.h>
 #include <Preferences.h>
+#include <ETH.h>
+#include <WebServer.h>
 
-/* ================================================================
- * CONFIGURATION ETHERNET - LAN8720
- * ================================================================ */
 
-#define ETH_PHY_TYPE   ETH_PHY_LAN8720
+// ============================================================
+// CONFIGURATION
+// ============================================================
+
+#define LCD_I2C_ADDR  0x12
+#define LCD_I2C_SDA   32
+#define LCD_I2C_SCL   33
+
+#define RELAY_I2C_ADDR 0x12
+#define RELAY_I2C_SDA  27
+#define RELAY_I2C_SCL  14
+
+#define MAX_NAME_LEN 14
+
+#define RELAY_COUNT 8
+
+#define LCD_RX_FIFO_SIZE 16
+
+#define RELAY_POLL_INTERVAL 500
+
+
+// ============================================================
+// ETHERNET LAN8720
+// ============================================================
+
 #define ETH_PHY_ADDR   1
+#define ETH_PHY_POWER  16
 #define ETH_PHY_MDC    23
 #define ETH_PHY_MDIO   18
-#define ETH_PHY_POWER  16
 #define ETH_CLK_MODE   ETH_CLOCK_GPIO0_IN
 
-/* ================================================================
- * CONFIGURATION DES RELAIS
- * ================================================================
- *
- * Les sorties sont actives à l'état LOW.
- * Donc :
- *   ON  -> GPIO LOW
- *   OFF -> GPIO HIGH
- *
- * ================================================================ */
+const char* HOSTNAME = "Antenna_Relay_Ctrl";
 
-const uint8_t relayPins[8] = {
+
+// ============================================================
+// OBJETS
+// ============================================================
+
+TwoWire I2C_LCD = TwoWire(0);
+TwoWire I2C_RELAY = TwoWire(1);
+
+WebServer server(80);
+
+Preferences preferences;
+
+
+// ============================================================
+// RELAIS
+// ============================================================
+
+const uint8_t relayPins[RELAY_COUNT] = {
   4, 5, 17, 19, 21, 22, 25, 26
 };
 
-constexpr bool RELAY_ACTIVE_LOW = true;
+bool relayStates[RELAY_COUNT] = {
+  false, false, false, false,
+  false, false, false, false
+};
 
-/* ================================================================
- * CONFIGURATION I2C
- * ================================================================ */
+char relayNames[RELAY_COUNT][MAX_NAME_LEN + 1];
 
-const uint8_t I2C_ADDR = 0x12;
-const uint8_t I2C_SDA = 32;
-const uint8_t I2C_SCL = 33;
 
-/* ================================================================
- * NOM DE L'ESP32 SUR LE RESEAU
- * ================================================================ */
-
-const char *HOSTNAME = "Antenna_Relay_Ctrl";
-
-/* ================================================================
- * SERVEUR WEB ET MEMOIRE
- * ================================================================ */
-
-WebServer server(80);
-Preferences prefs;
-
-/* ================================================================
- * VARIABLES D'ETAT
- * ================================================================ */
+// ============================================================
+// ETHERNET
+// ============================================================
 
 volatile bool ethConnected = false;
 
-/*
- * Ces indicateurs permettent de demander une réponse I2C
- * depuis la fonction onRequest().
- */
-volatile bool i2cRequestStates = false;
-volatile bool i2cRequestNames = false;
+char cachedIP[16] = "0.0.0.0";
 
-/*
- * Buffer de réception I2C.
- */
-volatile uint8_t rxBuf[64];
-volatile uint8_t rxLen = 0;
 
-/*
- * Mutex utilisé pour protéger le buffer I2C.
- */
-portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+// ============================================================
+// I2C LCD RX FIFO
+// ============================================================
 
-/*
- * Etat des 8 relais :
- *
- * false = OFF
- * true  = ON
- */
-bool relayState[8];
-
-/*
- * Noms des relais.
- *
- * 17 caractères utiles maximum
- * + 1 caractère '\0'
- */
-char relayNames[8][18] = {
-  "Relais 1",
-  "Relais 2",
-  "Relais 3",
-  "Relais 4",
-  "Relais 5",
-  "Relais 6",
-  "Relais 7",
-  "Relais 8"
+struct LCDCommand {
+  uint8_t type;
+  uint8_t relay;
+  uint8_t value;
+  uint8_t length;
+  char text[MAX_NAME_LEN + 1];
 };
 
-/* ================================================================
- * COMMANDE PHYSIQUE D'UN RELAIS
- * ================================================================ */
+volatile LCDCommand lcdFifo[LCD_RX_FIFO_SIZE];
 
-void outputRelay(uint8_t i, bool on) {
-  /*
-   * Protection contre un index invalide.
-   */
-  if (i >= 8) {
-    return;
-  }
+volatile uint8_t lcdFifoHead = 0;
+volatile uint8_t lcdFifoTail = 0;
 
-  /*
-   * Les relais sont actifs LOW.
-   */
-  digitalWrite(
-    relayPins[i],
-    RELAY_ACTIVE_LOW ? !on : on
-  );
-}
 
-/* ================================================================
- * ARRET DE TOUS LES RELAIS
- * ================================================================ */
+// ============================================================
+// REPONSE I2C LCD
+// ============================================================
 
-void allOff() {
-  for (uint8_t i = 0; i < 8; ++i) {
-    relayState[i] = false;
-    outputRelay(i, false);
-  }
-}
+volatile uint8_t lcdResponseType = 0;
 
-/* ================================================================
- * COMMANDE D'UN RELAIS
- * ================================================================
- *
- * Mode exclusif :
- * lorsqu'un relais est activé, tous les autres sont d'abord
- * désactivés.
- *
- * Exemple :
- *   setRelay(2, true)
- *
- * -> Relais 3 ON
- * -> Tous les autres OFF
- *
- * ================================================================ */
 
-void setRelay(uint8_t r, bool on) {
-  if (r >= 8) {
-    return;
-  }
+// ============================================================
+// COPIE STRUCTURE -> FIFO VOLATILE
+// ============================================================
 
-  if (on) {
-    allOff();
-
-    relayState[r] = true;
-
-    outputRelay(
-      r,
-      true
-    );
-  } else {
-    relayState[r] = false;
-
-    outputRelay(
-      r,
-      false
-    );
-  }
-}
-
-/* ================================================================
- * SAUVEGARDE D'UN NOM DE RELAIS
- * ================================================================ */
-
-void saveName(uint8_t i, const char *s) {
-  if (i >= 8) {
-    return;
-  }
-
-  /*
-   * Limitation à 17 caractères.
-   */
-  strncpy(
-    relayNames[i],
-    s,
-    17
-  );
-
-  relayNames[i][17] = '\0';
-
-  /*
-   * Chaque relais possède sa propre clé :
-   * n0, n1, n2, ... n7
-   */
-  String key = "n" + String(i);
-
-  prefs.putString(
-    key.c_str(),
-    relayNames[i]
-  );
-}
-
-/* ================================================================
- * CHARGEMENT DES NOMS
- * ================================================================ */
-
-void loadNames() {
-  /*
-   * Ouverture de l'espace de stockage "relays".
-   */
-  prefs.begin(
-    "relays",
-    false
-  );
-
-  for (uint8_t i = 0; i < 8; ++i) {
-    String key = "n" + String(i);
-
-    String stored =
-      prefs.getString(
-        key.c_str(),
-        ""
-      );
-
-    /*
-     * Si un nom est enregistré, on le récupère.
-     */
-    if (stored.length() > 0) {
-      strncpy(
-        relayNames[i],
-        stored.c_str(),
-        17
-      );
-
-      relayNames[i][17] = '\0';
-    }
-  }
-}
-
-/* ================================================================
- * RECEPTION I2C
- * ================================================================
- *
- * Cette fonction est appelée automatiquement par Wire lorsqu'un
- * maître I2C envoie des données.
- *
- * Les données sont simplement copiées dans rxBuf.
- * Le traitement est effectué plus tard dans loop(), afin de ne pas
- * effectuer de traitement lourd dans l'interruption I2C.
- *
- * ================================================================ */
-
-void onReceive(int) {
-  portENTER_CRITICAL(&mux);
-
-  rxLen = 0;
-
-  while (
-    Wire.available() &&
-    rxLen < sizeof(rxBuf)
-  ) {
-    rxBuf[rxLen++] = Wire.read();
-  }
-
-  portEXIT_CRITICAL(&mux);
-}
-
-/* ================================================================
- * REPONSE I2C
- * ================================================================
- *
- * Le maître I2C peut demander :
- *
- *   - l'état des relais
- *   - les noms des relais
- *   - l'état Ethernet
- *
- * ================================================================ */
-
-void onRequest() {
-  /*
-   * Demande de l'état des relais.
-   */
-  if (i2cRequestStates) {
-    i2cRequestStates = false;
-
-    uint8_t out[8];
-
-    for (uint8_t i = 0; i < 8; ++i) {
-      out[i] = relayState[i];
-    }
-
-    Wire.write(
-      out,
-      8
-    );
-
-    return;
-  }
-
-  /*
-   * Demande des noms.
-   *
-   * 8 relais x 18 octets = 144 octets.
-   */
-  if (i2cRequestNames) {
-    i2cRequestNames = false;
-
-    uint8_t out[144] = {0};
-
-    for (uint8_t i = 0; i < 8; ++i) {
-      strncpy(
-        (char *)&out[i * 18],
-        relayNames[i],
-        17
-      );
-    }
-
-    Wire.write(
-      out,
-      sizeof(out)
-    );
-
-    return;
-  }
-
-  /*
-   * Si aucune demande particulière n'est en attente,
-   * on retourne simplement l'état Ethernet.
-   *
-   * 0 = Ethernet absent
-   * 1 = Ethernet connecté avec adresse IP
-   */
-  uint8_t status =
-    ethConnected ? 1 : 0;
-
-  Wire.write(
-    &status,
-    1
-  );
-}
-
-/* ================================================================
- * TRAITEMENT DES COMMANDES I2C
- * ================================================================ */
-
-void processI2C() {
-  uint8_t buf[64];
-  uint8_t n;
-
-  /*
-   * Copie protégée du buffer reçu.
-   */
-  portENTER_CRITICAL(&mux);
-
-  n = rxLen;
-
-  memcpy(
-    buf,
-    (const void *)rxBuf,
-    n
-  );
-
-  rxLen = 0;
-
-  portEXIT_CRITICAL(&mux);
-
-  if (!n) {
-    return;
-  }
-
-  /* --------------------------------------------------------------
-   * 0x01 : commande d'un relais
-   *
-   * Format :
-   *   [0] = 0x01
-   *   [1] = numéro du relais 0..7
-   *   [2] = état 0/1
-   * -------------------------------------------------------------- */
-
-  if (
-    buf[0] == 0x01 &&
-    n >= 3
-  ) {
-    setRelay(
-      buf[1],
-      buf[2] != 0
-    );
-  }
-
-  /* --------------------------------------------------------------
-   * 0x02 : demande de l'état des relais
-   * -------------------------------------------------------------- */
-
-  else if (
-    buf[0] == 0x02
-  ) {
-    i2cRequestStates = true;
-  }
-
-  /* --------------------------------------------------------------
-   * 0x03 : modification du nom d'un relais
-   *
-   * Format :
-   *   [0] = 0x03
-   *   [1] = relais
-   *   [2] = longueur
-   *   [3...] = texte
-   * -------------------------------------------------------------- */
-
-  else if (
-    buf[0] == 0x03 &&
-    n >= 4
-  ) {
-    uint8_t index = buf[1];
-
-    uint8_t len =
-      min(
-        (int)buf[2],
-        17
-      );
-
-    if (
-      index < 8 &&
-      n >= len + 3
-    ) {
-      char txt[18] = {0};
-
-      memcpy(
-        txt,
-        &buf[3],
-        len
-      );
-
-      saveName(
-        index,
-        txt
-      );
-    }
-  }
-
-  /* --------------------------------------------------------------
-   * 0x04 : demande des noms
-   * -------------------------------------------------------------- */
-
-  else if (
-    buf[0] == 0x04
-  ) {
-    i2cRequestNames = true;
-  }
-}
-
-/* ================================================================
- * EVENEMENTS ETHERNET
- * ================================================================ */
-
-void onEthEvent(
-  WiFiEvent_t event
+void copyCommandToFifo(
+  volatile LCDCommand& destination,
+  const LCDCommand& source
 ) {
+  destination.type = source.type;
+  destination.relay = source.relay;
+  destination.value = source.value;
+  destination.length = source.length;
+
+  for (uint8_t i = 0; i <= MAX_NAME_LEN; i++) {
+    destination.text[i] = source.text[i];
+  }
+}
+
+
+// ============================================================
+// COPIE FIFO VOLATILE -> STRUCTURE
+// ============================================================
+
+void copyCommandFromFifo(
+  LCDCommand& destination,
+  volatile LCDCommand& source
+) {
+  destination.type = source.type;
+  destination.relay = source.relay;
+  destination.value = source.value;
+  destination.length = source.length;
+
+  for (uint8_t i = 0; i <= MAX_NAME_LEN; i++) {
+    destination.text[i] = source.text[i];
+  }
+}
+
+
+// ============================================================
+// ETHERNET READY
+// ============================================================
+
+bool ethernetReady() {
+
+  IPAddress ip = ETH.localIP();
+
+  if (ip == IPAddress(0, 0, 0, 0)) {
+    return false;
+  }
+
+  return ETH.linkUp();
+}
+
+
+// ============================================================
+// ETHERNET EVENTS
+// ============================================================
+
+void onEvent(WiFiEvent_t event) {
+
   switch (event) {
 
-    /*
-     * Le PHY Ethernet vient de démarrer.
-     */
-    case ARDUINO_EVENT_ETH_START:
+    case SYSTEM_EVENT_ETH_START:
 
-      Serial.println(
-        "ETH START"
-      );
+      Serial.println("ETH START");
 
-      ETH.setHostname(
-        HOSTNAME
-      );
+      ETH.setHostname(HOSTNAME);
 
       break;
 
-    /*
-     * Liaison physique Ethernet établie.
-     */
-    case ARDUINO_EVENT_ETH_CONNECTED:
 
-      Serial.println(
-        "ETH CONNECTED"
-      );
+    case SYSTEM_EVENT_ETH_CONNECTED:
+
+      Serial.println("ETH CONNECTED");
 
       break;
 
-    /*
-     * DHCP terminé / adresse IP obtenue.
-     */
-    case ARDUINO_EVENT_ETH_GOT_IP:
+
+    case SYSTEM_EVENT_ETH_GOT_IP:
 
       ethConnected = true;
 
-      Serial.print(
-        "IP  : "
-      );
+      {
+        String ip = ETH.localIP().toString();
 
+        ip.toCharArray(
+          cachedIP,
+          sizeof(cachedIP)
+        );
+      }
+
+      Serial.println();
+      Serial.println("========== ETHERNET ==========");
+
+      Serial.print("IP      : ");
+      Serial.println(ETH.localIP());
+
+      Serial.print("MASK    : ");
+      Serial.println(ETH.subnetMask());
+
+      Serial.print("GATEWAY : ");
+      Serial.println(ETH.gatewayIP());
+
+      Serial.print("LINK    : ");
       Serial.println(
-        ETH.localIP()
+        ETH.linkUp() ? "UP" : "DOWN"
       );
 
-      Serial.print(
-        "MASK: "
-      );
-
-      Serial.println(
-        ETH.subnetMask()
-      );
-
-      Serial.print(
-        "GW  : "
-      );
-
-      Serial.println(
-        ETH.gatewayIP()
-      );
+      Serial.println("==============================");
+      Serial.println();
 
       break;
 
-    /*
-     * Déconnexion du câble ou perte de liaison.
-     */
-    case ARDUINO_EVENT_ETH_DISCONNECTED:
 
-      Serial.println(
-        "ETH DISCONNECTED"
-      );
+    case SYSTEM_EVENT_ETH_DISCONNECTED:
+
+      Serial.println("ETH DISCONNECTED");
 
       ethConnected = false;
 
+      strncpy(
+        cachedIP,
+        "0.0.0.0",
+        sizeof(cachedIP)
+      );
+
+      cachedIP[sizeof(cachedIP) - 1] = '\0';
+
       break;
 
-    /*
-     * Arrêt du PHY.
-     */
-    case ARDUINO_EVENT_ETH_STOP:
 
-      Serial.println(
-        "ETH STOP"
-      );
+    case SYSTEM_EVENT_ETH_STOP:
+
+      Serial.println("ETH STOP");
 
       ethConnected = false;
 
+      strncpy(
+        cachedIP,
+        "0.0.0.0",
+        sizeof(cachedIP)
+      );
+
+      cachedIP[sizeof(cachedIP) - 1] = '\0';
+
       break;
+
 
     default:
+
       break;
   }
 }
 
-/* ================================================================
- * API WEB : ETAT DES RELAIS
- * ================================================================
- *
- * Exemple de réponse :
- *
- * {
- *   "Relais 1":false,
- *   "Relais 2":true,
- *   ...
- * }
- *
- * ================================================================ */
 
-void handleApiState() {
-  if (!ethConnected) {
-    server.send(
-      503,
-      "application/json",
-      "{\"error\":\"no eth\"}"
+// ============================================================
+// RELAIS LOCAUX
+// ============================================================
+
+void applyRelay(uint8_t relay, bool state) {
+
+  if (relay >= RELAY_COUNT) {
+    return;
+  }
+
+  /*
+    Relais actifs LOW.
+
+    Lorsqu'un relais est activé,
+    tous les autres sont désactivés.
+  */
+
+  if (state) {
+
+    for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+
+      if (i == relay) {
+
+        digitalWrite(
+          relayPins[i],
+          LOW
+        );
+
+        relayStates[i] = true;
+
+      } else {
+
+        digitalWrite(
+          relayPins[i],
+          HIGH
+        );
+
+        relayStates[i] = false;
+      }
+    }
+
+  } else {
+
+    digitalWrite(
+      relayPins[relay],
+      HIGH
+    );
+
+    relayStates[relay] = false;
+  }
+}
+
+
+// ============================================================
+// CHARGE LES NOMS
+// ============================================================
+
+void loadNames() {
+
+  preferences.begin("relays", false);
+
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+
+    char key[4];
+
+    snprintf(
+      key,
+      sizeof(key),
+      "n%u",
+      i
+    );
+
+    String defaultName =
+      "Relais " + String(i + 1);
+
+    String name =
+      preferences.getString(
+        key,
+        defaultName
+      );
+
+    name.toCharArray(
+      relayNames[i],
+      sizeof(relayNames[i])
+    );
+
+    relayNames[i][MAX_NAME_LEN] = '\0';
+  }
+
+  preferences.end();
+}
+
+
+// ============================================================
+// SAUVEGARDE NOM
+// ============================================================
+
+void saveRelayName(
+  uint8_t relay,
+  const char* name
+) {
+
+  if (relay >= RELAY_COUNT) {
+    return;
+  }
+
+  strncpy(
+    relayNames[relay],
+    name,
+    MAX_NAME_LEN
+  );
+
+  relayNames[relay][MAX_NAME_LEN] = '\0';
+
+  preferences.begin("relays", false);
+
+  char key[4];
+
+  snprintf(
+    key,
+    sizeof(key),
+    "n%u",
+    relay
+  );
+
+  preferences.putString(
+    key,
+    relayNames[relay]
+  );
+
+  preferences.end();
+}
+
+
+// ============================================================
+// I2C LCD - RECEPTION
+// ============================================================
+
+void onLCDReceive(int count) {
+
+  if (count <= 0) {
+    return;
+  }
+
+  uint8_t type = I2C_LCD.read();
+
+  // ----------------------------------------------------------
+  // 0x01 = SET RELAY
+  // ----------------------------------------------------------
+
+  if (type == 0x01) {
+
+    LCDCommand cmd;
+
+    memset(
+      &cmd,
+      0,
+      sizeof(cmd)
+    );
+
+    cmd.type = 0x01;
+
+    if (I2C_LCD.available()) {
+      cmd.relay = I2C_LCD.read();
+    }
+
+    if (I2C_LCD.available()) {
+      cmd.value = I2C_LCD.read();
+    }
+
+    uint8_t next =
+      (lcdFifoHead + 1) %
+      LCD_RX_FIFO_SIZE;
+
+    if (next != lcdFifoTail) {
+
+      copyCommandToFifo(
+        lcdFifo[lcdFifoHead],
+        cmd
+      );
+
+      lcdFifoHead = next;
+    }
+
+    while (I2C_LCD.available()) {
+      I2C_LCD.read();
+    }
+
+    return;
+  }
+
+
+  // ----------------------------------------------------------
+  // 0x02 = REQUEST STATES
+  // ----------------------------------------------------------
+
+  if (type == 0x02) {
+
+    lcdResponseType = 0x02;
+
+    while (I2C_LCD.available()) {
+      I2C_LCD.read();
+    }
+
+    return;
+  }
+
+
+  // ----------------------------------------------------------
+  // 0x03 = SET NAME
+  // ----------------------------------------------------------
+
+  if (type == 0x03) {
+
+    LCDCommand cmd;
+
+    memset(
+      &cmd,
+      0,
+      sizeof(cmd)
+    );
+
+    cmd.type = 0x03;
+
+    if (I2C_LCD.available()) {
+      cmd.relay = I2C_LCD.read();
+    }
+
+    if (I2C_LCD.available()) {
+      cmd.length = I2C_LCD.read();
+    }
+
+    if (cmd.length > MAX_NAME_LEN) {
+      cmd.length = MAX_NAME_LEN;
+    }
+
+    uint8_t index = 0;
+
+    while (
+      I2C_LCD.available() &&
+      index < MAX_NAME_LEN
+    ) {
+
+      cmd.text[index++] =
+        I2C_LCD.read();
+    }
+
+    cmd.text[index] = '\0';
+
+    uint8_t next =
+      (lcdFifoHead + 1) %
+      LCD_RX_FIFO_SIZE;
+
+    if (next != lcdFifoTail) {
+
+      copyCommandToFifo(
+        lcdFifo[lcdFifoHead],
+        cmd
+      );
+
+      lcdFifoHead = next;
+    }
+
+    while (I2C_LCD.available()) {
+      I2C_LCD.read();
+    }
+
+    return;
+  }
+
+
+  // ----------------------------------------------------------
+  // 0x04 = REQUEST NAMES
+  // ----------------------------------------------------------
+
+  if (type == 0x04) {
+
+    lcdResponseType = 0x04;
+
+    while (I2C_LCD.available()) {
+      I2C_LCD.read();
+    }
+
+    return;
+  }
+
+
+  // ----------------------------------------------------------
+  // 0x05 = REQUEST IP
+  // ----------------------------------------------------------
+
+  if (type == 0x05) {
+
+    lcdResponseType = 0x05;
+
+    while (I2C_LCD.available()) {
+      I2C_LCD.read();
+    }
+
+    return;
+  }
+
+
+  // ----------------------------------------------------------
+  // VIDANGE
+  // ----------------------------------------------------------
+
+  while (I2C_LCD.available()) {
+    I2C_LCD.read();
+  }
+}
+
+
+// ============================================================
+// I2C LCD - REPONSE
+// ============================================================
+
+void onLCDRequest() {
+
+  uint8_t response =
+    lcdResponseType;
+
+  lcdResponseType = 0;
+
+
+  // ----------------------------------------------------------
+  // ETATS RELAIS
+  // ----------------------------------------------------------
+
+  if (response == 0x02) {
+
+    uint8_t states[RELAY_COUNT];
+
+    for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+
+      states[i] =
+        relayStates[i] ? 1 : 0;
+    }
+
+    I2C_LCD.write(
+      states,
+      RELAY_COUNT
     );
 
     return;
   }
 
-  String json = "{";
 
-  for (uint8_t i = 0; i < 8; ++i) {
-    json += "\"";
-    json += relayNames[i];
-    json += "\":";
-    json += relayState[i]
-      ? "true"
-      : "false";
+  // ----------------------------------------------------------
+  // NOMS RELAIS
+  // ----------------------------------------------------------
 
-    if (i < 7) {
-      json += ",";
+  if (response == 0x04) {
+
+    /*
+      8 noms x 15 octets
+      = 120 octets
+
+      MAX_NAME_LEN = 14
+      + '\0'
+    */
+
+    uint8_t buffer[
+      RELAY_COUNT *
+      (MAX_NAME_LEN + 1)
+    ];
+
+    uint16_t index = 0;
+
+    for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+
+      for (
+        uint8_t j = 0;
+        j <= MAX_NAME_LEN;
+        j++
+      ) {
+
+        buffer[index++] =
+          relayNames[i][j];
+      }
+    }
+
+    I2C_LCD.write(
+      buffer,
+      sizeof(buffer)
+    );
+
+    return;
+  }
+
+
+  // ----------------------------------------------------------
+  // ADRESSE IP
+  // ----------------------------------------------------------
+
+  if (response == 0x05) {
+
+    /*
+      Toujours exactement 16 octets.
+
+      Exemple :
+      "192.168.1.100"
+      suivi de '\0' puis zéros.
+    */
+
+    I2C_LCD.write(
+      (const uint8_t*)cachedIP,
+      sizeof(cachedIP)
+    );
+
+    return;
+  }
+}
+
+
+// ============================================================
+// TRAITEMENT FIFO LCD
+// ============================================================
+
+void processLCDCommands() {
+
+  while (lcdFifoTail != lcdFifoHead) {
+
+    LCDCommand cmd;
+
+    copyCommandFromFifo(
+      cmd,
+      lcdFifo[lcdFifoTail]
+    );
+
+    lcdFifoTail =
+      (lcdFifoTail + 1) %
+      LCD_RX_FIFO_SIZE;
+
+
+    // --------------------------------------------------------
+    // SET RELAY
+    // --------------------------------------------------------
+
+    if (cmd.type == 0x01) {
+
+      if (cmd.relay < RELAY_COUNT) {
+
+        applyRelay(
+          cmd.relay,
+          cmd.value != 0
+        );
+
+        Serial.print("LCD -> RELAIS ");
+        Serial.print(cmd.relay);
+        Serial.print(" = ");
+        Serial.println(
+          cmd.value ? "ON" : "OFF"
+        );
+      }
+    }
+
+
+    // --------------------------------------------------------
+    // SET NAME
+    // --------------------------------------------------------
+
+    else if (cmd.type == 0x03) {
+
+      if (cmd.relay < RELAY_COUNT) {
+
+        saveRelayName(
+          cmd.relay,
+          cmd.text
+        );
+
+        Serial.print("LCD -> NOM ");
+        Serial.print(cmd.relay);
+        Serial.print(" = ");
+        Serial.println(
+          relayNames[cmd.relay]
+        );
+      }
     }
   }
-
-  json += "}";
-
-  server.send(
-    200,
-    "application/json",
-    json
-  );
 }
 
-/* ================================================================
- * API WEB : COMMANDE D'UN RELAIS
- * ================================================================
- *
- * Exemple :
- *
- *   /api/set?relay=0&on=1
- *
- * ================================================================ */
 
-void handleApiSet() {
-  if (!ethConnected) {
-    server.send(
-      503,
-      "application/json",
-      "{\"error\":\"no eth\"}"
+// ============================================================
+// RELAIS ESP32 DISTANT
+// ============================================================
+
+bool writeRelayCommand(
+  uint8_t relay,
+  bool state
+) {
+
+  if (relay >= RELAY_COUNT) {
+    return false;
+  }
+
+  I2C_RELAY.beginTransmission(
+    RELAY_I2C_ADDR
+  );
+
+  I2C_RELAY.write(0x01);
+  I2C_RELAY.write(relay);
+  I2C_RELAY.write(state ? 1 : 0);
+
+  uint8_t error =
+    I2C_RELAY.endTransmission();
+
+  return error == 0;
+}
+
+
+// ============================================================
+// LECTURE ETATS RELAIS
+// ============================================================
+
+bool readRelayStates() {
+
+  I2C_RELAY.beginTransmission(
+    RELAY_I2C_ADDR
+  );
+
+  I2C_RELAY.write(0x02);
+
+  uint8_t error =
+    I2C_RELAY.endTransmission(
+      false
     );
 
-    return;
+  if (error != 0) {
+    return false;
   }
+
+  uint8_t received =
+    I2C_RELAY.requestFrom(
+      RELAY_I2C_ADDR,
+      (uint8_t)RELAY_COUNT
+    );
+
+  if (received != RELAY_COUNT) {
+
+    while (I2C_RELAY.available()) {
+      I2C_RELAY.read();
+    }
+
+    return false;
+  }
+
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+
+    relayStates[i] =
+      I2C_RELAY.read() != 0;
+  }
+
+  return true;
+}
+
+
+// ============================================================
+// ENVOI NOM AU MODULE RELAIS
+// ============================================================
+
+bool sendRelayName(
+  uint8_t relay,
+  const char* name
+) {
+
+  if (relay >= RELAY_COUNT) {
+    return false;
+  }
+
+  uint8_t length =
+    strlen(name);
+
+  if (length > MAX_NAME_LEN) {
+    length = MAX_NAME_LEN;
+  }
+
+  I2C_RELAY.beginTransmission(
+    RELAY_I2C_ADDR
+  );
+
+  I2C_RELAY.write(0x03);
+  I2C_RELAY.write(relay);
+  I2C_RELAY.write(length);
+
+  for (uint8_t i = 0; i < length; i++) {
+    I2C_RELAY.write(name[i]);
+  }
+
+  uint8_t error =
+    I2C_RELAY.endTransmission();
+
+  return error == 0;
+}
+
+
+// ============================================================
+// POLLING RELAIS
+// ============================================================
+
+unsigned long lastRelayPoll = 0;
+
+bool relayOnline = false;
+
+void pollRelay() {
 
   if (
-    !server.hasArg("relay") ||
-    !server.hasArg("on")
+    millis() - lastRelayPoll <
+    RELAY_POLL_INTERVAL
   ) {
-    server.send(
-      400,
-      "application/json",
-      "{\"error\":\"missing param\"}"
-    );
-
     return;
   }
 
-  uint8_t idx =
-    server.arg(
-      "relay"
-    ).toInt();
+  lastRelayPoll = millis();
 
-  bool on =
-    server.arg(
-      "on"
-    ) != "0";
+  bool ok =
+    readRelayStates();
 
-  if (idx >= 8) {
-    server.send(
-      404,
-      "application/json",
-      "{\"error\":\"relay out of range\"}"
-    );
-
-    return;
-  }
-
-  setRelay(
-    idx,
-    on
-  );
-
-  /*
-   * Après la commande, on retourne immédiatement
-   * le nouvel état complet des relais.
-   */
-  handleApiState();
+  relayOnline = ok;
 }
 
-/* ================================================================
- * PAGE WEB
- * ================================================================
- *
- * L'interface est générée directement par l'ESP32.
- *
- * Responsive :
- *
- *   > 1050 px : 4 colonnes
- *   801-1050  : 3 colonnes
- *   561-800   : 2 colonnes
- *   <= 560    : 1 colonne
- *
- * L'affichage fonctionne également en mode paysage sur smartphone.
- *
- * ================================================================ */
 
-void handleRoot() {
-  /*
-   * Si Ethernet n'est pas disponible, inutile de générer
-   * toute l'interface.
-   */
-  if (!ethConnected) {
-    server.send(
-      503,
-      "text/html",
-      "<!DOCTYPE html>"
-      "<html lang='fr'>"
-      "<meta charset='utf-8'>"
-      "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-      "<body style='font-family:system-ui;padding:40px;background:#0f172a;color:white'>"
-      "<h1>Ethernet non connecté</h1>"
-      "</body>"
-      "</html>"
-    );
+// ============================================================
+// WEB HTML
+// ============================================================
 
-    return;
-  }
-
-  String html = R"rawliteral(
+const char html[] PROGMEM = R"ANTENNA_HTML(
 <!DOCTYPE html>
 <html lang="fr">
+
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0b1120">
+
+<meta charset="UTF-8">
+
+<meta
+  name="viewport"
+  content="width=device-width,initial-scale=1"
+>
+
 <title>Antenna Control Center</title>
 
 <style>
@@ -816,35 +965,28 @@ void handleRoot() {
   box-sizing:border-box;
 }
 
-html{
-  width:100%;
-  min-height:100%;
-  overflow-x:hidden;
-}
-
 body{
   margin:0;
-  width:100%;
   min-height:100vh;
   font-family:
-    Inter,
-    ui-sans-serif,
     system-ui,
     -apple-system,
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
+
   color:var(--text);
+
   background:
     radial-gradient(
-      circle at 10% 0%,
+      circle at top left,
       rgba(56,189,248,.14),
       transparent 32%
     ),
     radial-gradient(
-      circle at 90% 10%,
+      circle at top right,
       rgba(34,197,94,.10),
-      transparent 28%
+      transparent 32%
     ),
     var(--bg);
 }
@@ -852,469 +994,212 @@ body{
 .container{
   width:100%;
   max-width:1200px;
-  margin:0 auto;
-  padding:
-    clamp(16px,3vw,32px)
-    clamp(12px,3vw,24px)
-    40px;
+  margin:auto;
+  padding:28px 20px 20px;
 }
-
-/* --------------------------------------------------------------
- * En-tête
- * -------------------------------------------------------------- */
 
 header{
-  position:relative;
-  width:100%;
-  min-height:58px;
-  display:flex;
-  justify-content:center;
-  align-items:center;
-  margin-bottom:clamp(20px,4vw,32px);
+  text-align:center;
+  margin-bottom:28px;
 }
 
-header > div:first-child{
-  width:100%;
-  text-align:center;
-  padding:0 190px;
+/* =========================================================
+   LOGO ANTENNE - SVG INTEGRE
+   Aucun fichier image externe n'est necessaire.
+   ========================================================= */
+
+.header-brand{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:16px;
 }
+
+.antenna-logo{
+  width:72px;
+  height:72px;
+  flex:0 0 72px;
+  color:var(--text);
+  filter:drop-shadow(0 0 8px rgba(34,197,94,.18));
+  transition:transform .2s ease, filter .2s ease;
+}
+
+.header-brand:hover .antenna-logo{
+  transform:scale(1.05);
+  filter:drop-shadow(0 0 12px rgba(34,197,94,.35));
+}
+
+.header-title{
+  text-align:left;
+}
+
+.header-title h1{
+  margin:0;
+}
+
+.header-subtitle{
+  margin:5px 0 0;
+  color:var(--muted);
+  font-size:14px;
+  font-weight:500;
+}
+
 
 h1{
   margin:0;
-  font-size:clamp(23px,4vw,36px);
-  line-height:1.15;
-  letter-spacing:-.03em;
-  overflow-wrap:anywhere;
+  font-size:clamp(25px,4vw,38px);
+  font-weight:800;
+  letter-spacing:.5px;
 }
 
-/* --------------------------------------------------------------
- * Etat Ethernet
- * -------------------------------------------------------------- */
-
-.connection{
-  position:absolute;
-  right:0;
-  top:50%;
-  transform:translateY(-50%);
-  display:flex;
-  align-items:center;
-  gap:9px;
-  max-width:190px;
-  padding:9px 12px;
-  border:1px solid var(--border);
-  border-radius:999px;
-  background:rgba(17,24,39,.82);
-  font-size:13px;
-  color:#dbeafe;
-  backdrop-filter:blur(12px);
-}
-
-.dot{
-  flex:0 0 auto;
-  width:9px;
-  height:9px;
-  border-radius:50%;
-  background:var(--accent2);
-  box-shadow:
-    0 0 14px
-    rgba(34,197,94,.8);
-}
-
-/* --------------------------------------------------------------
- * Grille des relais
- * -------------------------------------------------------------- */
-
-.relay-grid{
-  width:100%;
+.grid{
   display:grid;
   grid-template-columns:
     repeat(4,minmax(0,1fr));
-  gap:clamp(12px,2vw,18px);
+  gap:18px;
 }
 
-/* --------------------------------------------------------------
- * Carte relais
- * -------------------------------------------------------------- */
-
-.relay{
-  position:relative;
-  overflow:hidden;
-  min-width:0;
+.card{
   min-height:190px;
-  padding:clamp(15px,2vw,20px);
-  display:flex;
-  flex-direction:column;
-  justify-content:space-between;
-  border:2px solid var(--danger);
   border-radius:20px;
-  background:
-    linear-gradient(
-      145deg,
-      rgba(23,32,51,.96),
-      rgba(17,24,39,.88)
-    );
-  box-shadow:var(--shadow);
-  transition:
-    transform .18s ease,
-    border-color .18s ease,
-    box-shadow .18s ease,
-    background .18s ease;
-}
 
-.relay:hover{
-  transform:translateY(-3px);
-  border-color:rgba(244,63,94,.75);
-}
-
-/* --------------------------------------------------------------
- * Relais actif
- * -------------------------------------------------------------- */
-
-.relay.active{
-  border-color:#22c55e;
-  background:
-    linear-gradient(
-      145deg,
-      rgba(22,101,52,.65),
-      rgba(17,24,39,.92)
-    );
-  box-shadow:
-    0 18px 45px
-    rgba(34,197,94,.09);
-}
-
-.relay.active::before{
-  content:"";
-  position:absolute;
-  inset:0;
-  background:
-    radial-gradient(
-      circle at 85% 10%,
-      rgba(34,197,94,.14),
-      transparent 38%
-    );
-  pointer-events:none;
-}
-
-/* --------------------------------------------------------------
- * Partie supérieure de la carte
- * -------------------------------------------------------------- */
-
-.relay-top{
-  display:flex;
-  justify-content:space-between;
-  align-items:flex-start;
-  gap:8px;
-}
-
-.number{
-  width:36px;
-  height:36px;
-  flex:0 0 36px;
-  display:grid;
-  place-items:center;
-  border-radius:11px;
-  background:#1e293b;
-  color:#cbd5e1;
-  font-weight:700;
-  font-size:13px;
-}
-
-/* --------------------------------------------------------------
- * Indication ACTIF / INACTIF
- * -------------------------------------------------------------- */
-
-.status{
-  max-width:100%;
-  padding:6px 9px;
-  border-radius:999px;
-  font-size:11px;
-  font-weight:800;
-  letter-spacing:.05em;
-  background:
-    rgba(244,63,94,.11);
-  color:#fda4af;
-}
-
-.relay.active .status{
-  background:
-    rgba(34,197,94,.12);
-  color:#86efac;
-}
-
-/* --------------------------------------------------------------
- * Nom du relais
- * -------------------------------------------------------------- */
-
-.relay-name{
-  width:100%;
-  margin-top:20px;
-  font-size:clamp(15px,1.8vw,18px);
-  font-weight:700;
-  line-height:1.3;
-  text-align:center;
-  overflow-wrap:anywhere;
-  word-break:break-word;
-}
-
-.relay-state{
-  min-height:5px;
-  margin-top:5px;
-  color:var(--muted);
-  font-size:13px;
-  text-align:center;
-}
-
-/* --------------------------------------------------------------
- * Bouton
- * -------------------------------------------------------------- */
-
-.toggle{
-  width:100%;
-  min-height:48px;
-  margin-top:16px;
-  padding:11px 14px;
   border:2px solid var(--danger);
-  border-radius:12px;
+
+  background:
+    linear-gradient(
+      145deg,
+      #151c2b,
+      #0e1523
+    );
+
+  box-shadow:var(--shadow);
+
+  display:flex;
+  align-items:center;
+  justify-content:center;
+
   cursor:pointer;
-  color:white;
-  background:#263449;
-  font-size:14px;
-  font-weight:700;
-  touch-action:manipulation;
-  -webkit-tap-highlight-color:transparent;
+
   transition:
-    transform .12s ease,
-    background .18s ease,
-    border-color .18s ease,
-    box-shadow .18s ease;
+    transform .15s ease,
+    border-color .15s ease,
+    background .15s ease,
+    box-shadow .15s ease;
+
+  user-select:none;
+
+  outline:none;
 }
 
-.relay:not(.active) .toggle{
-  border-color:#f43f5e;
+.card:hover{
+  transform:translateY(-3px);
+}
+
+.card:focus-visible{
   box-shadow:
-    0 0 12px
-    rgba(244,63,94,.15);
+    0 0 0 3px rgba(56,189,248,.35),
+    var(--shadow);
 }
 
-.relay.active .toggle{
+.card.active{
+  border-color:var(--accent2);
+
   background:
     linear-gradient(
-      135deg,
-      #16a34a,
-      #22c55e
-    );
-  border-color:#22c55e;
-  box-shadow:
-    0 0 12px
-    rgba(34,197,94,.20);
-}
-
-.toggle:hover{
-  background:#334155;
-}
-
-.relay.active .toggle:hover{
-  background:
-    linear-gradient(
-      135deg,
-      #16a34a,
-      #22c55e
+      145deg,
+      rgba(34,197,94,.20),
+      rgba(20,83,45,.35)
     );
 }
 
-.toggle:active{
-  transform:scale(.97);
-}
+.name{
+  width:100%;
+  min-height:100%;
 
-.toggle:disabled{
-  opacity:.65;
-  cursor:wait;
-}
+  padding:20px;
 
-/* --------------------------------------------------------------
- * Pied de page
- * -------------------------------------------------------------- */
+  display:flex;
+  align-items:center;
+  justify-content:center;
 
-.footer{
-  margin-top:24px;
-  padding:0 10px;
   text-align:center;
-  color:#64748b;
-  font-size:12px;
-  line-height:1.5;
+
+  font-size:20px;
+  font-weight:750;
+  line-height:1.25;
+
+  overflow-wrap:anywhere;
 }
 
-/* --------------------------------------------------------------
- * Grand écran
- * 4 relais par ligne
- * -------------------------------------------------------------- */
+footer{
+  margin-top:30px;
 
-@media(min-width:1051px){
+  text-align:center;
 
-  .relay-grid{
-    grid-template-columns:
-      repeat(4,minmax(0,1fr));
-  }
+  color:var(--muted);
 
+  font-size:13px;
 }
 
-/* --------------------------------------------------------------
- * Ordinateur portable
- * 3 relais par ligne
- * -------------------------------------------------------------- */
+@media(max-width:1050px){
 
-@media(min-width:801px) and (max-width:1050px){
-
-  .relay-grid{
+  .grid{
     grid-template-columns:
       repeat(3,minmax(0,1fr));
   }
 
-  header > div:first-child{
-    padding:0 175px;
-  }
-
-  .connection{
-    max-width:175px;
-  }
-
 }
 
-/* --------------------------------------------------------------
- * Tablette
- * 2 relais par ligne
- * -------------------------------------------------------------- */
+@media(max-width:800px){
 
-@media(min-width:561px) and (max-width:800px){
-
-  .relay-grid{
+  .grid{
     grid-template-columns:
       repeat(2,minmax(0,1fr));
   }
 
-  header{
-    min-height:55px;
-  }
-
-  header > div:first-child{
-    padding:0 160px;
-  }
-
-  .connection{
-    max-width:155px;
-    font-size:12px;
-  }
-
-}
-
-/* --------------------------------------------------------------
- * Smartphone
- * 1 relais par ligne
- * -------------------------------------------------------------- */
-
-@media(max-width:560px){
-
-  .container{
-    padding:
-      14px 10px 30px;
-  }
-
-  header{
-    min-height:0;
-    padding-bottom:58px;
-    margin-bottom:20px;
-  }
-
-  header > div:first-child{
-    padding:0;
-  }
-
-  h1{
-    font-size:
-      clamp(22px,7vw,28px);
-  }
-
-  .connection{
-    position:absolute;
-    top:auto;
-    bottom:0;
-    right:50%;
-    transform:translateX(50%);
-    width:max-content;
-    max-width:calc(100% - 20px);
-    padding:8px 12px;
-    font-size:12px;
-  }
-
-  .relay-grid{
-    grid-template-columns:1fr;
-    gap:12px;
-  }
-
-  .relay{
+  .card{
     min-height:175px;
     border-radius:18px;
   }
 
-  .relay-name{
-    font-size:17px;
-  }
-
-  .toggle{
-    min-height:50px;
-    font-size:15px;
-  }
-
 }
 
-/* --------------------------------------------------------------
- * Très petit smartphone
- * -------------------------------------------------------------- */
-
-@media(max-width:360px){
+@media(max-width:560px){
 
   .container{
-    padding-left:8px;
-    padding-right:8px;
+    padding:20px 14px 16px;
   }
 
-  h1{
-    font-size:21px;
+  .grid{
+    grid-template-columns:1fr;
+    gap:14px;
   }
 
-  .relay{
-    padding:14px;
-  }
-
-  .connection{
-    font-size:11px;
-  }
-
-  .toggle{
-    min-height:48px;
+  .card{
+    min-height:175px;
   }
 
 }
 
-/* --------------------------------------------------------------
- * Smartphone en mode paysage
- * -------------------------------------------------------------- */
+@media(
+  max-width:800px
+) and (
+  orientation:landscape
+){
 
-@media(max-width:800px) and (orientation:landscape){
-
-  .relay-grid{
+  .grid{
     grid-template-columns:
       repeat(2,minmax(0,1fr));
   }
 
-  .relay{
+  .card{
     min-height:165px;
   }
 
 }
 
 </style>
+
 </head>
 
 <body>
@@ -1323,337 +1208,252 @@ h1{
 
 <header>
 
-  <div>
-    <h1>Antenna Control Center</h1>
-  </div>
+<div class="header-brand">
 
-  <div class="connection">
+<svg
+  class="antenna-logo"
+  viewBox="0 0 120 120"
+  xmlns="http://www.w3.org/2000/svg"
+  role="img"
+  aria-label="Antenne radio"
+>
 
-    <span class="dot"></span>
+  <!-- Ondes radio gauche -->
+  <path
+    d="M28 25 C7 44 7 76 28 95"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="7"
+    stroke-linecap="round"
+  />
 
-    <div>
+  <path
+    d="M43 39 C31 50 31 70 43 81"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="7"
+    stroke-linecap="round"
+  />
 
-      <div>
-        Ethernet connecté
-      </div>
+  <!-- Ondes radio droite -->
+  <path
+    d="M92 25 C113 44 113 76 92 95"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="7"
+    stroke-linecap="round"
+  />
 
-      <div
-        style="
-          font-size:11px;
-          color:#94a3b8;
-          margin-top:2px;
-        ">
+  <path
+    d="M77 39 C89 50 89 70 77 81"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="7"
+    stroke-linecap="round"
+  />
 
-        IP : )rawliteral";
+  <!-- Point d'emission -->
+  <circle
+    cx="60"
+    cy="48"
+    r="8"
+    fill="currentColor"
+  />
 
-  html += ETH.localIP().toString();
+  <!-- Mât / antenne -->
+  <path
+    d="M60 57 L42 105 M60 57 L78 105"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="8"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
 
-  html += R"rawliteral(
+  <!-- Barre centrale -->
+  <path
+    d="M49 82 H71"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="7"
+    stroke-linecap="round"
+  />
 
-      </div>
+</svg>
 
-    </div>
+<div class="header-title">
+  <h1>Antenna Control Center</h1>
+</div>
 
-  </div>
+</div>
 
 </header>
 
-<section
-  class="relay-grid"
-  id="list">
+<main
+  id="grid"
+  class="grid"
+></main>
 
-)rawliteral";
-
-  /*
-   * Génération des 8 cartes relais.
-   */
-  for (uint8_t i = 0; i < 8; ++i) {
-
-    html += "<article class='relay";
-
-    if (relayState[i]) {
-      html += " active";
-    }
-
-    html += "' id='relay";
-    html += String(i);
-    html += "'>";
-
-    html += "<div>";
-
-    html += "<div class='relay-top'>";
-
-    html += "<div class='number'>";
-    html += String(i + 1);
-    html += "</div>";
-
-    html += "<div class='status' id='status";
-    html += String(i);
-    html += "'>";
-
-    html += relayState[i]
-      ? "ACTIF"
-      : "INACTIF";
-
-    html += "</div>";
-
-    html += "</div>";
-
-    html += "<div class='relay-name'>";
-    html += relayNames[i];
-    html += "</div>";
-
-    html += "<div class='relay-state' id='state";
-    html += String(i);
-    html += "'></div>";
-
-    html += "</div>";
-
-    html += "<button class='toggle' onclick='toggle(";
-    html += String(i);
-    html += ")' id='btn";
-    html += String(i);
-    html += "'>";
-
-    html += relayState[i]
-      ? "Désactiver"
-      : "Activer";
-
-    html += "</button>";
-
-    html += "</article>";
-  }
-
-  html += R"rawliteral(
-
-</section>
-
-<div class="footer">
-  2026 - F4BIT@CopyLeft.
-  Sous licence GNU General Public License v3.0.
-</div>
+<footer>
+2026 - F4BIT@CopyLeft.
+Sous licence GNU General Public License v3.0
+</footer>
 
 </div>
 
 <script>
 
-/* ==============================================================
- * MISE A JOUR DE L'INTERFACE
- * ==============================================================
- *
- * Reçoit l'objet JSON envoyé par l'ESP32 et met à jour
- * les cartes sans recharger la page.
- * ============================================================== */
-
 function render(data){
+
+  const grid =
+    document.getElementById("grid");
+
+  grid.innerHTML = "";
 
   const names =
     Object.keys(data);
 
-  for(
-    let i = 0;
-    i < 8;
-    i++
-  ){
+  names.forEach(
+    function(name,index){
 
-    const state =
-      !!data[names[i]];
+      const active =
+        !!data[name];
 
-    const card =
-      document.getElementById(
-        'relay' + i
+      const card =
+        document.createElement("div");
+
+      card.className =
+        "card" +
+        (active ? " active" : "");
+
+      card.setAttribute(
+        "role",
+        "button"
       );
 
-    const status =
-      document.getElementById(
-        'status' + i
+      card.setAttribute(
+        "tabindex",
+        "0"
       );
 
-    const text =
-      document.getElementById(
-        'state' + i
-      );
+      const title =
+        document.createElement("div");
 
-    const btn =
-      document.getElementById(
-        'btn' + i
-      );
+      title.className =
+        "name";
 
-    /*
-     * Protection si un élément HTML n'existe pas.
-     */
-    if(
-      !card ||
-      !status ||
-      !text ||
-      !btn
-    ){
-      continue;
-    }
+      title.textContent =
+        name;
 
-    /*
-     * Ajout / suppression de la classe "active".
-     */
-    card.classList.toggle(
-      'active',
-      state
-    );
+      card.appendChild(title);
 
-    status.textContent =
-      state
-      ? 'ACTIF'
-      : 'INACTIF';
+      card.addEventListener(
+        "click",
+        function(){
 
-    text.textContent =
-      '';
+          toggle(index);
 
-    btn.textContent =
-      state
-      ? 'Désactiver'
-      : 'Activer';
-  }
-}
-
-/* ==============================================================
- * COMMANDE D'UN RELAIS
- * ============================================================== */
-
-async function toggle(idx){
-
-  const btn =
-    document.getElementById(
-      'btn' + idx
-    );
-
-  /*
-   * On détermine l'état demandé à partir du texte du bouton.
-   */
-  const currentText =
-    btn.textContent;
-
-  const turnOn =
-    currentText === 'Activer'
-    ? 1
-    : 0;
-
-  /*
-   * Désactivation temporaire du bouton pour éviter
-   * plusieurs commandes simultanées.
-   */
-  btn.disabled = true;
-
-  btn.textContent =
-    'Mise à jour…';
-
-  try{
-
-    const response =
-      await fetch(
-        '/api/set?relay=' +
-        idx +
-        '&on=' +
-        turnOn,
-        {
-          cache:'no-store'
         }
       );
 
-    if(
-      !response.ok
-    ){
-      throw new Error(
-        'Erreur HTTP ' +
-        response.status
-      );
-    }
+      card.addEventListener(
+        "keydown",
+        function(event){
 
-    /*
-     * Récupération du nouvel état des 8 relais.
-     */
-    const data =
-      await response.json();
+          if(
+            event.key === "Enter" ||
+            event.key === " "
+          ){
 
-    render(data);
+            event.preventDefault();
 
-  }
-  catch(error){
+            toggle(index);
+          }
 
-    console.error(
-      error
-    );
-
-    btn.textContent =
-      'Erreur';
-
-    /*
-     * Retour au texte précédent après 1,2 seconde.
-     */
-    setTimeout(
-      () => {
-        btn.textContent =
-          currentText;
-      },
-      1200
-    );
-
-  }
-  finally{
-
-    btn.disabled =
-      false;
-  }
-}
-
-/* ==============================================================
- * RAFRAICHISSEMENT AUTOMATIQUE
- * ==============================================================
- *
- * L'état des relais est relu toutes les 5 secondes.
- *
- * Cela permet notamment de refléter une commande reçue
- * par I2C sur l'interface Web.
- * ============================================================== */
-
-async function refresh(){
-
-  try{
-
-    const response =
-      await fetch(
-        '/api/state',
-        {
-          cache:'no-store'
         }
       );
 
-    if(
-      response.ok
-    ){
-
-      render(
-        await response.json()
-      );
-
+      grid.appendChild(card);
     }
-
-  }
-  catch(error){
-
-    console.error(
-      error
-    );
-
-  }
+  );
 }
 
-/*
- * Première lecture immédiatement après le chargement.
- */
+
+function toggle(idx){
+
+  fetch(
+    "/api/set?relay=" +
+    idx +
+    "&on=1"
+  )
+  .then(
+    function(response){
+
+      if(!response.ok){
+
+        throw new Error(
+          "HTTP " + response.status
+        );
+      }
+
+      return response.text();
+    }
+  )
+  .then(
+    function(){
+
+      refresh();
+    }
+  )
+  .catch(
+    function(error){
+
+      console.error(error);
+
+      refresh();
+    }
+  );
+}
+
+
+function refresh(){
+
+  fetch(
+    "/api/state",
+    {
+      cache:"no-store"
+    }
+  )
+  .then(
+    function(response){
+
+      if(!response.ok){
+
+        throw new Error(
+          "HTTP " + response.status
+        );
+      }
+
+      return response.json();
+    }
+  )
+  .then(
+    function(data){
+
+      render(data);
+    }
+  )
+  .catch(
+    function(error){
+
+      console.error(error);
+    }
+  );
+}
+
+
 refresh();
 
-/*
- * Puis actualisation automatique toutes les 5 secondes.
- */
 setInterval(
   refresh,
   5000
@@ -1662,146 +1462,500 @@ setInterval(
 </script>
 
 </body>
+
 </html>
+)ANTENNA_HTML";
 
-)rawliteral";
 
-  server.send(
+// ============================================================
+// WEB : PAGE PRINCIPALE
+// ============================================================
+
+void handleRoot() {
+
+  if (!ethernetReady()) {
+
+    server.send(
+      503,
+      "text/plain",
+      "Ethernet non disponible"
+    );
+
+    return;
+  }
+
+  server.send_P(
     200,
     "text/html",
     html
   );
 }
 
-/* ================================================================
- * INITIALISATION
- * ================================================================ */
+
+// ============================================================
+// WEB : ETAT
+// ============================================================
+
+void handleState() {
+
+  if (!ethernetReady()) {
+
+    server.send(
+      503,
+      "application/json",
+      "{\"error\":\"Ethernet non disponible\"}"
+    );
+
+    return;
+  }
+
+
+  String json = "{";
+
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+
+    if (i > 0) {
+      json += ",";
+    }
+
+    json += "\"";
+
+    json += relayNames[i];
+
+    json += "\":";
+
+    json +=
+      relayStates[i]
+      ? "true"
+      : "false";
+  }
+
+  json += "}";
+
+  server.send(
+    200,
+    "application/json",
+    json
+  );
+}
+
+
+// ============================================================
+// WEB : SET RELAIS
+// ============================================================
+
+void handleSet() {
+
+  if (!ethernetReady()) {
+
+    server.send(
+      503,
+      "text/plain",
+      "Ethernet non disponible"
+    );
+
+    return;
+  }
+
+
+  if (
+    !server.hasArg("relay") ||
+    !server.hasArg("on")
+  ) {
+
+    server.send(
+      400,
+      "text/plain",
+      "Parametres manquants"
+    );
+
+    return;
+  }
+
+
+  int relay =
+    server.arg("relay").toInt();
+
+  int on =
+    server.arg("on").toInt();
+
+
+  if (
+    relay < 0 ||
+    relay >= RELAY_COUNT
+  ) {
+
+    server.send(
+      400,
+      "text/plain",
+      "Relais invalide"
+    );
+
+    return;
+  }
+
+
+  bool state =
+    on != 0;
+
+
+  bool ok =
+    writeRelayCommand(
+      relay,
+      state
+    );
+
+
+  if (!ok) {
+
+    relayOnline = false;
+
+    server.send(
+      500,
+      "text/plain",
+      "Erreur I2C relais"
+    );
+
+    return;
+  }
+
+
+  /*
+    Mise à jour optimiste du cache.
+
+    Le relais distant applique aussi
+    l'exclusivité : un seul relais ON.
+  */
+
+  if (state) {
+
+    for (
+      uint8_t i = 0;
+      i < RELAY_COUNT;
+      i++
+    ) {
+
+      relayStates[i] =
+        (i == relay);
+    }
+
+  } else {
+
+    relayStates[relay] = false;
+  }
+
+
+  relayOnline = true;
+
+
+  server.send(
+    200,
+    "text/plain",
+    "OK"
+  );
+}
+
+
+// ============================================================
+// SETUP
+// ============================================================
 
 void setup() {
 
-  Serial.begin(
-    115200
+  Serial.begin(115200);
+
+  delay(500);
+
+  Serial.println();
+  Serial.println();
+  Serial.println(
+    "========================================"
+  );
+  Serial.println(
+    " ANTENNA CONTROL CENTER - ETH01"
+  );
+  Serial.println(
+    "========================================"
+  );
+
+
+  // ----------------------------------------------------------
+  // RELAIS LOCAUX / CACHE
+  // ----------------------------------------------------------
+
+  for (
+    uint8_t i = 0;
+    i < RELAY_COUNT;
+    i++
+  ) {
+
+    relayStates[i] = false;
+  }
+
+
+  // ----------------------------------------------------------
+  // NOMS
+  // ----------------------------------------------------------
+
+  loadNames();
+
+
+  // ----------------------------------------------------------
+  // I2C RELAIS
+  // ----------------------------------------------------------
+
+  I2C_RELAY.begin(
+    RELAY_I2C_SDA,
+    RELAY_I2C_SCL,
+    100000
   );
 
   Serial.println(
-    "\n=== WT32-ETH01 – 8 relais ==="
+    "I2C RELAY : OK"
   );
 
-  /*
-   * Configuration des GPIO relais.
-   */
-  for (
-    uint8_t i = 0;
-    i < 8;
-    ++i
-  ) {
 
-    pinMode(
-      relayPins[i],
-      OUTPUT
-    );
-  }
+  // ----------------------------------------------------------
+  // I2C LCD ESCLAVE
+  // ----------------------------------------------------------
 
-  /*
-   * Sécurité :
-   * tous les relais sont désactivés au démarrage.
-   */
-  allOff();
+  I2C_LCD.begin(
+    LCD_I2C_ADDR,
+    LCD_I2C_SDA,
+    LCD_I2C_SCL,
+    100000
+  );
 
-  /*
-   * Récupération des noms enregistrés.
-   */
-  loadNames();
+  I2C_LCD.onReceive(
+    onLCDReceive
+  );
 
-  /*
-   * Activation des événements Ethernet.
-   */
+  I2C_LCD.onRequest(
+    onLCDRequest
+  );
+
+  Serial.println(
+    "I2C LCD   : OK"
+  );
+
+
+  // ----------------------------------------------------------
+  // ETHERNET
+  // ----------------------------------------------------------
+
   WiFi.onEvent(
-    onEthEvent
+    onEvent
   );
 
-  /*
-   * Initialisation LAN8720.
-   *
-   * Cette syntaxe est compatible avec
-   * Arduino ESP32 Core 2.0.17.
-   */
   ETH.begin(
     ETH_PHY_ADDR,
     ETH_PHY_POWER,
     ETH_PHY_MDC,
     ETH_PHY_MDIO,
-    ETH_PHY_TYPE,
+    ETH_PHY_LAN8720,
     ETH_CLK_MODE
   );
 
-  /*
-   * Initialisation I2C en mode esclave.
-   */
-  Wire.begin(
-    I2C_ADDR,
-    I2C_SDA,
-    I2C_SCL,
-    100000
+
+  // ----------------------------------------------------------
+  // ATTENTE ETHERNET
+  // ----------------------------------------------------------
+
+  Serial.println(
+    "Attente Ethernet..."
   );
 
-  /*
-   * Fonctions appelées par Wire.
-   */
-  Wire.onReceive(
-    onReceive
-  );
+  unsigned long startWait =
+    millis();
 
-  Wire.onRequest(
-    onRequest
-  );
+  while (
+    !ethernetReady() &&
+    millis() - startWait < 10000
+  ) {
 
-  /*
-   * Routes du serveur Web.
-   */
+    delay(100);
+  }
+
+
+  if (ethernetReady()) {
+
+    Serial.println(
+      "Ethernet pret."
+    );
+
+    Serial.print(
+      "Adresse IP : "
+    );
+
+    Serial.println(
+      ETH.localIP()
+    );
+
+  } else {
+
+    Serial.println(
+      "Ethernet non disponible."
+    );
+  }
+
+
+  // ----------------------------------------------------------
+  // WEB SERVER
+  // ----------------------------------------------------------
+
   server.on(
     "/",
+    HTTP_GET,
     handleRoot
   );
 
   server.on(
     "/api/state",
-    handleApiState
+    HTTP_GET,
+    handleState
   );
 
   server.on(
     "/api/set",
-    handleApiSet
+    HTTP_GET,
+    handleSet
   );
 
-  /*
-   * Démarrage du serveur HTTP.
-   */
   server.begin();
 
+
   Serial.println(
-    "Serveur web démarré (port 80)"
+    "WebServer : port 80"
+  );
+
+
+  // ----------------------------------------------------------
+  // PREMIERE LECTURE RELAIS
+  // ----------------------------------------------------------
+
+  if (readRelayStates()) {
+
+    relayOnline = true;
+
+    Serial.println(
+      "Relais : ONLINE"
+    );
+
+  } else {
+
+    relayOnline = false;
+
+    Serial.println(
+      "Relais : OFFLINE"
+    );
+  }
+
+
+  Serial.println(
+    "========================================"
+  );
+
+  Serial.println(
+    "SYSTEME PRET"
+  );
+
+  Serial.println(
+    "========================================"
   );
 }
 
-/* ================================================================
- * BOUCLE PRINCIPALE
- * ================================================================ */
+
+// ============================================================
+// LOOP
+// ============================================================
 
 void loop() {
 
-  /*
-   * Traitement des éventuelles commandes I2C.
-   */
-  processI2C();
+  // ----------------------------------------------------------
+  // COMMANDES LCD
+  // ----------------------------------------------------------
 
-  /*
-   * Traitement des requêtes HTTP.
-   */
+  processLCDCommands();
+
+
+  // ----------------------------------------------------------
+  // WEB SERVER
+  // ----------------------------------------------------------
+
   server.handleClient();
 
+
+  // ----------------------------------------------------------
+  // POLLING RELAIS
+  // ----------------------------------------------------------
+
+  pollRelay();
+
+
+  // ----------------------------------------------------------
+  // MAINTIEN DE L'IP CACHEE
+  // ----------------------------------------------------------
+
   /*
-   * Petite pause pour laisser du temps aux autres tâches ESP32.
-   */
-  delay(5);
+    Si l'Ethernet est opérationnel mais que
+    l'adresse IP a changé, on actualise le cache.
+
+    Cette opération reste dans loop(),
+    jamais dans le callback I2C.
+  */
+
+  static unsigned long lastIPCheck = 0;
+
+  if (
+    millis() - lastIPCheck >= 1000
+  ) {
+
+    lastIPCheck = millis();
+
+    if (ethernetReady()) {
+
+      IPAddress ip =
+        ETH.localIP();
+
+      String ipString =
+        ip.toString();
+
+      if (
+        strncmp(
+          cachedIP,
+          ipString.c_str(),
+          sizeof(cachedIP)
+        ) != 0
+      ) {
+
+        ipString.toCharArray(
+          cachedIP,
+          sizeof(cachedIP)
+        );
+      }
+
+    } else {
+
+      if (
+        strcmp(
+          cachedIP,
+          "0.0.0.0"
+        ) != 0
+      ) {
+
+        strncpy(
+          cachedIP,
+          "0.0.0.0",
+          sizeof(cachedIP)
+        );
+
+        cachedIP[
+          sizeof(cachedIP) - 1
+        ] = '\0';
+      }
+    }
+  }
+
+
+  delay(1);
 }
