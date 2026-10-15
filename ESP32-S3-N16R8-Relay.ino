@@ -29,8 +29,7 @@
  * 0x02 : lire les états des 9 relais
  * 0x03 : modifier le nom d'un relais
  * 0x04 : lire les noms des relais
- * ============================================================
- */
+ * ============================================================/
 
 #include <Arduino.h>
 #include <Wire.h>
