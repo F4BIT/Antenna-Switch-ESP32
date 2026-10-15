@@ -1,53 +1,59 @@
-/*
- * ============================================================
- * ANTENNA CONTROL CENTER - ESP32 RELAY V2
+/* ============================================================
+ * ANTENNA CONTROL CENTER - ESP32-S3 RELAY V3
+ * Carte : ESP32-S3 DevKitC-1-N16R8
  * Arduino ESP32 Core 2.0.17
- * ============================================================
  *
- * ============================================================
- * GPIO RELAIS
- * ============================================================
+ * Auteur : F4BIT Stéphane
+ * Date   : 2026-09
+ * Licence: GNU General Public License v3.0
  *
- * Relay 1 -> GPIO 4
- * Relay 2 -> GPIO 5
- * Relay 3 -> GPIO 6
- * Relay 4 -> GPIO 7
- * Relay 5 -> GPIO 8
- * Relay 6 -> GPIO 9
- * Relay 7 -> GPIO 10
- * Relay 8 -> GPIO 11
+ * GPIO RELAIS (actifs à LOW)
+ * Relais 1 -> GPIO 4
+ * Relais 2 -> GPIO 5
+ * Relais 3 -> GPIO 6
+ * Relais 4 -> GPIO 7
+ * Relais 5 -> GPIO 8
+ * Relais 6 -> GPIO 9
+ * Relais 7 -> GPIO 10
+ * Relais 8 -> GPIO 11
+ * Relais 9 -> GPIO 14
  *
- * ============================================================
- * GPIO I2C SLAVE
- * ============================================================
- *
- * Address : 0x12
+ * I2C ESCLAVE
+ * Adresse : 0x12
  * SDA     : GPIO 12
  * SCL     : GPIO 13
- * Speed   : 100 kHz
+ * Vitesse : 100 kHz
+ *
+ * COMMANDES I2C
+ * 0x01 : commander un relais
+ * 0x02 : lire les états des 9 relais
+ * 0x03 : modifier le nom d'un relais
+ * 0x04 : lire les noms des relais
+ * ============================================================
  */
-// ============================================================
-// CONFIGURATION
-// ============================================================
 
 #include <Arduino.h>
 #include <Wire.h>
 #include <Preferences.h>
+#include <string.h>
 
-// I2C
-#define I2C_ADDRESS 0x12
-#define I2C_SDA     12
-#define I2C_SCL     13
-#define I2C_SPEED   100000
+// ============================================================
+// CONFIGURATION
+// ============================================================
 
-// Relais
-#define RELAY_COUNT 8
-#define MAX_NAME_LEN 14
+#define I2C_ADDRESS   0x12
+#define I2C_SDA       12
+#define I2C_SCL       13
+#define I2C_SPEED     100000
+
+#define RELAY_COUNT   9
+#define MAX_NAME_LEN  14
 #define NAME_SLOT_LEN (MAX_NAME_LEN + 1)
 
-// Relais actifs à LOW
+#define RX_BUFFER_SIZE 128
+
 const uint8_t relayPins[RELAY_COUNT] = {
-  4, 5, 6, 7, 8, 9, 10, 11
+  4, 5, 6, 7, 8, 9, 10, 11, 14
 };
 
 // ============================================================
@@ -56,15 +62,11 @@ const uint8_t relayPins[RELAY_COUNT] = {
 
 Preferences preferences;
 
-// Noms des relais
 char relayNames[RELAY_COUNT][NAME_SLOT_LEN];
 
-// Buffer de réception I2C
 volatile bool commandPending = false;
 volatile uint8_t rxLength = 0;
-volatile uint8_t rxBuffer[128];
-
-// Dernière commande reçue
+volatile uint8_t rxBuffer[RX_BUFFER_SIZE];
 volatile uint8_t lastCommand = 0;
 
 // ============================================================
@@ -76,17 +78,12 @@ void setRelay(uint8_t relay, bool state)
   if (relay >= RELAY_COUNT)
     return;
 
-  // Relais actifs LOW
-  // state = true  -> ON  -> LOW
-  // state = false -> OFF -> HIGH
+  // Relais actifs à LOW :
+  // ON  = LOW
+  // OFF = HIGH
 
-  digitalWrite(
-    relayPins[relay],
-    state ? LOW : HIGH
-  );
+  digitalWrite(relayPins[relay], state ? LOW : HIGH);
 }
-
-// ------------------------------------------------------------
 
 bool getRelay(uint8_t relay)
 {
@@ -96,21 +93,16 @@ bool getRelay(uint8_t relay)
   return digitalRead(relayPins[relay]) == LOW;
 }
 
-// ------------------------------------------------------------
-
 void allRelaysOff()
 {
   for (uint8_t i = 0; i < RELAY_COUNT; i++)
   {
-    digitalWrite(
-      relayPins[i],
-      HIGH
-    );
+    digitalWrite(relayPins[i], HIGH);
   }
 }
 
 // ============================================================
-// NOMS DES RELAIS
+// NOMS DES RELAIS - PREFERENCES
 // ============================================================
 
 void loadNames()
@@ -120,45 +112,38 @@ void loadNames()
   for (uint8_t i = 0; i < RELAY_COUNT; i++)
   {
     String key = "name" + String(i);
+    String defaultName = "RELAY" + String(i + 1);
 
     String name = preferences.getString(
       key.c_str(),
-      "RELAY" + String(i + 1)
+      defaultName.c_str()
     );
 
-    name.toCharArray(
-      relayNames[i],
-      NAME_SLOT_LEN
-    );
+    name.toCharArray(relayNames[i], NAME_SLOT_LEN);
+    relayNames[i][MAX_NAME_LEN] = '\0';
   }
 
   preferences.end();
 }
 
-// ------------------------------------------------------------
-
 void saveName(uint8_t relay, const char *name)
 {
-  if (relay >= RELAY_COUNT)
+  if (relay >= RELAY_COUNT || name == nullptr)
     return;
+
+  char safeName[NAME_SLOT_LEN];
+
+  strncpy(safeName, name, MAX_NAME_LEN);
+  safeName[MAX_NAME_LEN] = '\0';
 
   preferences.begin("relay", false);
 
   String key = "name" + String(relay);
-
-  preferences.putString(
-    key.c_str(),
-    name
-  );
+  preferences.putString(key.c_str(), safeName);
 
   preferences.end();
 
-  strncpy(
-    relayNames[relay],
-    name,
-    MAX_NAME_LEN
-  );
-
+  strncpy(relayNames[relay], safeName, MAX_NAME_LEN);
   relayNames[relay][MAX_NAME_LEN] = '\0';
 }
 
@@ -170,31 +155,30 @@ void onReceiveI2C(int count)
 {
   uint8_t len = 0;
 
-  while (Wire.available() && len < sizeof(rxBuffer))
+  while (Wire.available() && len < RX_BUFFER_SIZE)
   {
-    rxBuffer[len++] = Wire.read();
+    rxBuffer[len++] = (uint8_t)Wire.read();
   }
 
-  rxLength = len;
-
+  // Les commandes sont traitées ensuite dans loop().
   if (len > 0)
   {
     lastCommand = rxBuffer[0];
+    rxLength = len;
     commandPending = true;
   }
 }
 
 // ============================================================
-// CALLBACK I2C : DEMANDE
+// CALLBACK I2C : ENVOI
 // ============================================================
 
 void onRequestI2C()
 {
-  // ----------------------------------------------------------
-  // 0x02 = lecture état des 8 relais
-  // ----------------------------------------------------------
+  uint8_t command = lastCommand;
 
-  if (lastCommand == 0x02)
+  // 0x02 : états des 9 relais, un octet par relais.
+  if (command == 0x02)
   {
     uint8_t states[RELAY_COUNT];
 
@@ -203,26 +187,13 @@ void onRequestI2C()
       states[i] = getRelay(i) ? 1 : 0;
     }
 
-    Wire.write(
-      states,
-      RELAY_COUNT
-    );
+    Wire.write(states, sizeof(states));
   }
 
-  // ----------------------------------------------------------
-  // 0x04 = lecture de tous les noms
-  // 8 x 15 = 120 octets
-  // ----------------------------------------------------------
-
-  else if (lastCommand == 0x04)
+  // 0x04 : noms fixes de 15 octets par relais.
+  else if (command == 0x04)
   {
-    uint8_t buffer[RELAY_COUNT * NAME_SLOT_LEN];
-
-    memset(
-      buffer,
-      0,
-      sizeof(buffer)
-    );
+    uint8_t buffer[RELAY_COUNT * NAME_SLOT_LEN] = {0};
 
     for (uint8_t i = 0; i < RELAY_COUNT; i++)
     {
@@ -233,10 +204,7 @@ void onRequestI2C()
       );
     }
 
-    Wire.write(
-      buffer,
-      sizeof(buffer)
-    );
+    Wire.write(buffer, sizeof(buffer));
   }
 }
 
@@ -249,24 +217,23 @@ void processI2C()
   if (!commandPending)
     return;
 
-  uint8_t buffer[128];
-  uint8_t len;
+  uint8_t buffer[RX_BUFFER_SIZE];
+  uint8_t len = 0;
 
-  // Copie protégée du buffer reçu
   noInterrupts();
 
   len = rxLength;
 
-  if (len > sizeof(buffer))
-    len = sizeof(buffer);
+  if (len > RX_BUFFER_SIZE)
+    len = RX_BUFFER_SIZE;
 
-  memcpy(
-    buffer,
-    (const void *)rxBuffer,
-    len
-  );
+  for (uint8_t i = 0; i < len; i++)
+  {
+    buffer[i] = rxBuffer[i];
+  }
 
   commandPending = false;
+  rxLength = 0;
 
   interrupts();
 
@@ -275,130 +242,100 @@ void processI2C()
 
   uint8_t command = buffer[0];
 
-  // ==========================================================
-  // 0x01 = SET RELAY
-  //
-  // [0] = 0x01
-  // [1] = numéro relais 0..7
-  // [2] = état 0/1
-  // ==========================================================
+  // ----------------------------------------------------------
+  // 0x01 : SET RELAY
+  // [0] commande
+  // [1] index relais 0..8
+  // [2] état : 0 = OFF, 1 = ON
+  // ----------------------------------------------------------
 
   if (command == 0x01)
   {
-    if (len >= 3)
-    {
-      uint8_t relay = buffer[1];
-      uint8_t state = buffer[2];
+    if (len < 3)
+      return;
 
-      if (relay < RELAY_COUNT)
-      {
-        setRelay(
-          relay,
-          state != 0
-        );
+    uint8_t relay = buffer[1];
+    bool state = (buffer[2] != 0);
 
-        Serial0.print("Relay ");
-        Serial0.print(relay + 1);
-        Serial0.print(" -> ");
+    if (relay >= RELAY_COUNT)
+      return;
 
-        if (state)
-          Serial0.println("ON");
-        else
-          Serial0.println("OFF");
-      }
-    }
+    setRelay(relay, state);
+
+    Serial0.print("Relay ");
+    Serial0.print(relay + 1);
+    Serial0.print(" -> ");
+    Serial0.println(state ? "ON" : "OFF");
   }
 
-  // ==========================================================
-  // 0x02 = GET STATES
-  //
-  // La réponse est envoyée dans onRequestI2C()
-  // ==========================================================
+  // ----------------------------------------------------------
+  // 0x02 : GET STATES
+  // La réponse est envoyée dans onRequestI2C().
+  // ----------------------------------------------------------
 
   else if (command == 0x02)
   {
-    Serial0.println("I2C: GET STATES");
+    Serial0.println("I2C: GET STATES (9 relays)");
   }
 
-  // ==========================================================
-  // 0x03 = SET NAME
-  //
-  // [0] = 0x03
-  // [1] = numéro relais
-  // [2] = longueur
-  // [3...] = caractères
-  // ==========================================================
+  // ----------------------------------------------------------
+  // 0x03 : SET NAME
+  // [0] commande
+  // [1] index relais 0..8
+  // [2] longueur du nom
+  // [3...] caractères du nom
+  // ----------------------------------------------------------
 
   else if (command == 0x03)
   {
-    if (len >= 3)
-    {
-      uint8_t relay = buffer[1];
-      uint8_t nameLength = buffer[2];
+    if (len < 3)
+      return;
 
-      if (relay < RELAY_COUNT)
-      {
-        if (nameLength > MAX_NAME_LEN)
-          nameLength = MAX_NAME_LEN;
+    uint8_t relay = buffer[1];
+    uint8_t nameLength = buffer[2];
 
-        if (nameLength > len - 3)
-          nameLength = len - 3;
+    if (relay >= RELAY_COUNT)
+      return;
 
-        char name[NAME_SLOT_LEN];
+    if (nameLength > MAX_NAME_LEN)
+      nameLength = MAX_NAME_LEN;
 
-        memset(
-          name,
-          0,
-          sizeof(name)
-        );
+    uint8_t availableLength = len - 3;
 
-        memcpy(
-          name,
-          &buffer[3],
-          nameLength
-        );
+    if (nameLength > availableLength)
+      nameLength = availableLength;
 
-        name[MAX_NAME_LEN] = '\0';
+    char name[NAME_SLOT_LEN] = {0};
 
-        saveName(
-          relay,
-          name
-        );
+    memcpy(name, &buffer[3], nameLength);
+    name[nameLength] = '\0';
 
-        Serial0.print("Relay ");
-        Serial0.print(relay + 1);
-        Serial0.print(" name = ");
-        Serial0.println(name);
-      }
-    }
+    saveName(relay, name);
+
+    Serial0.print("Relay ");
+    Serial0.print(relay + 1);
+    Serial0.print(" name = ");
+    Serial0.println(name);
   }
 
-  // ==========================================================
-  // 0x04 = GET NAMES
-  //
-  // La réponse est envoyée dans onRequestI2C()
-  // ==========================================================
+  // ----------------------------------------------------------
+  // 0x04 : GET NAMES
+  // La réponse est envoyée dans onRequestI2C().
+  // ----------------------------------------------------------
 
   else if (command == 0x04)
   {
     Serial0.println("I2C: GET NAMES");
   }
 
-  // ==========================================================
-  // COMMANDE INCONNUE
-  // ==========================================================
-
   else
   {
     Serial0.print("I2C: Unknown command 0x");
 
     if (command < 0x10)
-      Serial0.print("0");
+      Serial0.print('0');
 
-    Serial0.println(
-      command,
-      HEX
-    );
+    Serial0.println(command, HEX);
   }
 }
 
@@ -408,47 +345,27 @@ void processI2C()
 
 void setup()
 {
-  // ----------------------------------------------------------
-  // UART0
-  // ----------------------------------------------------------
-
   Serial0.begin(115200);
-
   delay(500);
 
   Serial0.println();
   Serial0.println("========================================");
-  Serial0.println(" ESP32-S3 N16R8 - RELAY CONTROLLER");
+  Serial0.println(" ESP32-S3 N16R8 - 9 RELAY CONTROLLER");
   Serial0.println("========================================");
 
-  // ----------------------------------------------------------
-  // GPIO RELAIS
-  // ----------------------------------------------------------
-
+  // Initialisation des sorties relais.
   Serial0.println("Initializing relays...");
 
   for (uint8_t i = 0; i < RELAY_COUNT; i++)
   {
-    pinMode(
-      relayPins[i],
-      OUTPUT
-    );
-
-    // Relais OFF
-    digitalWrite(
-      relayPins[i],
-      HIGH
-    );
+    pinMode(relayPins[i], OUTPUT);
+    digitalWrite(relayPins[i], HIGH);
   }
 
   allRelaysOff();
+  Serial0.println("All 9 relays OFF");
 
-  Serial0.println("All relays OFF");
-
-  // ----------------------------------------------------------
-  // CHARGEMENT DES NOMS
-  // ----------------------------------------------------------
-
+  // Chargement des noms sauvegardés.
   loadNames();
 
   Serial0.println("Relay names loaded:");
@@ -461,10 +378,7 @@ void setup()
     Serial0.println(relayNames[i]);
   }
 
-  // ----------------------------------------------------------
-  // I2C
-  // ----------------------------------------------------------
-
+  // Initialisation I2C en mode esclave.
   Serial0.println();
   Serial0.println("Initializing I2C...");
 
@@ -479,10 +393,7 @@ void setup()
   Wire.onRequest(onRequestI2C);
 
   Serial0.print("I2C address : 0x");
-  Serial0.println(
-    I2C_ADDRESS,
-    HEX
-  );
+  Serial0.println(I2C_ADDRESS, HEX);
 
   Serial0.print("I2C SDA     : GPIO");
   Serial0.println(I2C_SDA);
@@ -494,13 +405,9 @@ void setup()
   Serial0.print(I2C_SPEED);
   Serial0.println(" Hz");
 
-  // ----------------------------------------------------------
-  // FIN DU BOOT
-  // ----------------------------------------------------------
-
   Serial0.println();
   Serial0.println("========================================");
-  Serial0.println(" READY");
+  Serial0.println(" READY - 9 RELAYS");
   Serial0.println("========================================");
 }
 
@@ -511,6 +418,5 @@ void setup()
 void loop()
 {
   processI2C();
-
   delay(2);
 }
