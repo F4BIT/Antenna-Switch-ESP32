@@ -1,13 +1,13 @@
 /******************************************************************
- *  ANTENNA CONTROL CENTER  -  VERSION HORIZONTALE (480 x 320)
+ *  ANTENNA CONTROL CENTER - VERSION HORIZONTALE (480 x 320)
  *  ESP32-S3 + LovyanGFX
  *  ST7796 SPI + tactile FT5x06 + WT32 I2C
  *
- *  Auteur : F4BIT Stéphane
- *  Date   : 2026-09
- *  CopyLeft. Sous licence GNU General Public License v3.0
+ * Auteur : F4BIT Stéphane
+ * Date   : 2026-09
+ * Licence: GNU General Public License v3.0
  *
- *  DESIGN LCD ALIGNE SUR LE WEB ETH01
+ *  VERSION 9 RELAIS
  *
  *  Appui court  : ON / OFF
  *  Appui long   : modifier le nom (700 ms)
@@ -16,9 +16,7 @@
  *  Noms envoyés à l'ESP32-ETH01
  *  Clavier virtuel AZERTY + chiffres
  *
- *  ADRESSE IP :
- *  L'ESP32-S3 demande l'adresse IP Ethernet
- *  directement à l'ESP32-ETH01 par I2C avec la commande 0x05.
+ *  Adresse IP demandée par I2C avec la commande 0x05.
  ******************************************************************/
 
 #define LGFX_USE_V1
@@ -27,10 +25,10 @@
 #include <Wire.h>
 #include <Preferences.h>
 #include <LovyanGFX.hpp>
-
+#include <string.h>
 
 // ============================================================
-// ECRAN
+// ECRAN : CONFIGURATION D'ORIGINE CONSERVEE
 // ============================================================
 
 class LGFX : public lgfx::LGFX_Device {
@@ -66,6 +64,8 @@ public:
       cfg.pin_cs = 10;
       cfg.pin_rst = -1;
 
+      // Dimensions physiques en portrait.
+      // La rotation 1 donnera le mode paysage 480 x 320.
       cfg.panel_width  = 320;
       cfg.panel_height = 480;
 
@@ -106,9 +106,7 @@ public:
 };
 
 LGFX lcd;
-
 Preferences prefs;
-
 
 // ============================================================
 // CONFIGURATION
@@ -125,35 +123,29 @@ const int I2C_SCL = 15;
 const uint8_t SCREEN_ROTATION = 1;
 
 const uint8_t MAX_NAME_LEN = 14;
-
+const uint8_t RELAY_COUNT = 9;
 
 // ============================================================
-// PALETTE EXACTE DU WEB ETH01
+// PALETTE ORIGINALE
 // ============================================================
 
-#define C_BG          0x0884   // #0b1120
-#define C_PANEL       0x10C4   // #111827
-#define C_WHITE       0xFFDF   // #f8fafc
-#define C_MUTED       0x9517   // #94a3b8
-#define C_GREEN       0x262B   // #22c55e
-#define C_RED         0xF1EB   // #f43f5e
-
+#define C_BG          0x0884
+#define C_PANEL       0x10C4
+#define C_WHITE       0xFFDF
+#define C_MUTED       0x9517
+#define C_GREEN       0x262B
+#define C_RED         0xF1EB
 #define C_BORDER      0x294A
-
 #define C_PANEL_LIGHT 0x18E6
-
 #define C_BLUE        0x4D9F
-
 #define C_ORANGE      0xFD20
 #define C_RED_DARK    0x9004
 
-
 // ============================================================
-// RELAIS
+// RELAIS : 9 RELAIS
 // ============================================================
 
-char names[8][MAX_NAME_LEN + 1] = {
-
+char names[RELAY_COUNT][MAX_NAME_LEN + 1] = {
   "Relais 1",
   "Relais 2",
   "Relais 3",
@@ -161,68 +153,50 @@ char names[8][MAX_NAME_LEN + 1] = {
   "Relais 5",
   "Relais 6",
   "Relais 7",
-  "Relais 8"
+  "Relais 8",
+  "Relais 9"
 };
 
-uint8_t states[8] = {0};
-
+uint8_t states[RELAY_COUNT] = {0};
 
 // ============================================================
 // ADRESSE IP ESP32-ETH01
-//
-// L'ETH01 renvoie exactement 16 octets.
-//
-// Exemple :
-// "192.168.1.100"
-// puis '\0' et des zéros.
-//
-// La valeur est conservée dans ethernetIP[].
 // ============================================================
 
 char ethernetIP[16] = "0.0.0.0";
-
 
 // ============================================================
 // BOUTONS
 // ============================================================
 
 struct B {
-
   int x;
   int y;
   int w;
   int h;
 };
 
-B b[8];
-
+B b[RELAY_COUNT];
 
 // ============================================================
 // TACTILE
 // ============================================================
 
 unsigned long touchStart = 0;
-
 int touchIndex = -1;
-
 bool wasTouch = false;
-
 unsigned long lastPoll = 0;
 
-
 // ============================================================
-// EDITION
+// EDITION DES NOMS
 // ============================================================
 
 String editName = "";
-
 int editIndex = -1;
-
 bool editing = false;
 
-
 // ============================================================
-// CLAVIER
+// CLAVIER AZERTY + CHIFFRES
 // ============================================================
 
 const char keys[] =
@@ -245,7 +219,6 @@ const int ACT_X0   = 8;
 const int ACT_W    = 112;
 const int ACT_PX   = 118;
 
-
 // ============================================================
 // UTILITAIRES GRAPHIQUES
 // ============================================================
@@ -257,12 +230,10 @@ void textCenter(
   int font,
   uint16_t color
 ) {
-
   lcd.setTextDatum(MC_DATUM);
   lcd.setTextColor(color);
   lcd.drawString(txt, x, y, font);
 }
-
 
 // ============================================================
 // LECTURE TACTILE
@@ -281,45 +252,45 @@ bool touchRead(uint16_t &x, uint16_t &y) {
   return true;
 }
 
-
 // ============================================================
 // CREATION DES BOUTONS
+// DISPOSITION : 3 COLONNES x 3 RANGEES
 // ============================================================
 
 void makeButtons() {
 
   const int marginX = 9;
-  const int gapX = 7;
+  const int gapX = 8;
 
   const int top = 42;
-  const int gapY = 8;
+  const int gapY = 7;
 
-  const int W = 110;
-  const int H = 104;
+  const int W = 148;
+  const int H = 70;
 
-  for (int i = 0; i < 8; i++) {
+  for (int i = 0; i < RELAY_COUNT; i++) {
 
-    int row = i / 4;
-    int col = i % 4;
+    int row = i / 3;
+    int col = i % 3;
 
     b[i] = {
-
       marginX + col * (W + gapX),
-
       top + row * (H + gapY),
-
       W,
       H
     };
   }
 }
 
-
 // ============================================================
 // I2C : COMMANDE RELAIS
+// Protocole d'origine conserve
 // ============================================================
 
 void sendCmd(uint8_t r, bool on) {
+
+  if (r >= RELAY_COUNT)
+    return;
 
   Wire.beginTransmission(WT32);
 
@@ -330,18 +301,19 @@ void sendCmd(uint8_t r, bool on) {
   Wire.endTransmission();
 }
 
-
 // ============================================================
-// I2C : ENVOI NOM
+// I2C : ENVOI DU NOM
 // ============================================================
 
 void sendName(uint8_t r) {
 
-  uint8_t l =
-    min(
-      (int)strlen(names[r]),
-      (int)MAX_NAME_LEN
-    );
+  if (r >= RELAY_COUNT)
+    return;
+
+  uint8_t l = min(
+    (int)strlen(names[r]),
+    (int)MAX_NAME_LEN
+  );
 
   Wire.beginTransmission(WT32);
 
@@ -357,21 +329,18 @@ void sendName(uint8_t r) {
   Wire.endTransmission();
 }
 
-
 // ============================================================
-// CHARGEMENT NOMS
+// CHARGEMENT DES NOMS
 // ============================================================
 
 void loadNames() {
 
   prefs.begin("names", false);
 
-  for (int i = 0; i < 8; i++) {
+  for (int i = 0; i < RELAY_COUNT; i++) {
 
     String k = String("n") + i;
-
-    String s =
-      prefs.getString(k.c_str(), "");
+    String s = prefs.getString(k.c_str(), "");
 
     if (s.length()) {
 
@@ -381,19 +350,18 @@ void loadNames() {
         MAX_NAME_LEN
       );
 
-      names[i][MAX_NAME_LEN] = 0;
+      names[i][MAX_NAME_LEN] = '\0';
     }
   }
 }
 
-
 // ============================================================
-// SAUVEGARDE NOM
+// SAUVEGARDE DU NOM
 // ============================================================
 
 void saveName() {
 
-  if (editIndex < 0)
+  if (editIndex < 0 || editIndex >= RELAY_COUNT)
     return;
 
   editName.trim();
@@ -402,8 +370,7 @@ void saveName() {
     return;
 
   if (editName.length() > MAX_NAME_LEN)
-    editName =
-      editName.substring(0, MAX_NAME_LEN);
+    editName = editName.substring(0, MAX_NAME_LEN);
 
   editName.toCharArray(
     names[editIndex],
@@ -418,82 +385,52 @@ void saveName() {
   sendName(editIndex);
 }
 
-
 // ============================================================
-// CARTE RELAIS
+// DESSIN D'UNE CARTE RELAIS
 // ============================================================
 
 void drawRelay(int i) {
 
+  if (i < 0 || i >= RELAY_COUNT)
+    return;
+
   const B &r = b[i];
-
   bool on = states[i];
-
-
-  // ----------------------------------------------------------
-  // Fond
-  // ----------------------------------------------------------
 
   if (on) {
 
     lcd.fillRoundRect(
-      r.x,
-      r.y,
-      r.w,
-      r.h,
-      18,
-      C_PANEL
+      r.x, r.y, r.w, r.h,
+      18, C_PANEL
     );
 
     uint16_t greenDark = 0x1246;
 
     lcd.fillRoundRect(
-      r.x + 2,
-      r.y + 2,
-      r.w - 4,
-      r.h - 4,
-      16,
-      greenDark
+      r.x + 2, r.y + 2,
+      r.w - 4, r.h - 4,
+      16, greenDark
     );
 
   } else {
 
     lcd.fillRoundRect(
-      r.x,
-      r.y,
-      r.w,
-      r.h,
-      18,
-      C_PANEL
+      r.x, r.y, r.w, r.h,
+      18, C_PANEL
     );
   }
 
-
-  // ----------------------------------------------------------
-  // Bordure
-  // ----------------------------------------------------------
-
   lcd.drawRoundRect(
-    r.x,
-    r.y,
-    r.w,
-    r.h,
-    18,
-    on ? C_GREEN : C_RED
+    r.x, r.y, r.w, r.h,
+    18, on ? C_GREEN : C_RED
   );
-
-
-  // ----------------------------------------------------------
-  // Nom
-  // ----------------------------------------------------------
 
   String s = names[i];
 
   if (s.length() > MAX_NAME_LEN)
     s = s.substring(0, MAX_NAME_LEN);
 
-  int font =
-    s.length() > 11 ? 1 : 2;
+  int font = s.length() > 11 ? 1 : 2;
 
   textCenter(
     s,
@@ -504,30 +441,59 @@ void drawRelay(int i) {
   );
 }
 
-
 // ============================================================
 // LOGO ANTENNE
 // ============================================================
 
 void drawAntennaLogo(int cx, int cy, float scale = 1.0f) {
 
-  // Point central
-  lcd.fillCircle(cx, cy - 5 * scale, 4 * scale, C_WHITE);
+  lcd.fillCircle(
+    cx, cy - 5 * scale,
+    4 * scale, C_WHITE
+  );
 
-  // Mât / forme A
-  lcd.drawLine(cx, cy, cx - 15 * scale, cy + 25 * scale, C_WHITE);
-  lcd.drawLine(cx, cy, cx + 15 * scale, cy + 25 * scale, C_WHITE);
-  lcd.drawLine(cx - 9 * scale, cy + 14 * scale, cx + 9 * scale, cy + 14 * scale, C_WHITE);
+  lcd.drawLine(
+    cx, cy,
+    cx - 15 * scale, cy + 25 * scale,
+    C_WHITE
+  );
 
-  // Ondes radio gauche
-  lcd.drawArc(cx - 1 * scale, cy - 5 * scale, 18 * scale, 18 * scale, 135, 225, C_WHITE);
-  lcd.drawArc(cx - 1 * scale, cy - 5 * scale, 27 * scale, 27 * scale, 135, 225, C_WHITE);
+  lcd.drawLine(
+    cx, cy,
+    cx + 15 * scale, cy + 25 * scale,
+    C_WHITE
+  );
 
-  // Ondes radio droite
-  lcd.drawArc(cx + 1 * scale, cy - 5 * scale, 18 * scale, 18 * scale, 315, 45, C_WHITE);
-  lcd.drawArc(cx + 1 * scale, cy - 5 * scale, 27 * scale, 27 * scale, 315, 45, C_WHITE);
+  lcd.drawLine(
+    cx - 9 * scale, cy + 14 * scale,
+    cx + 9 * scale, cy + 14 * scale,
+    C_WHITE
+  );
+
+  lcd.drawArc(
+    cx - 1 * scale, cy - 5 * scale,
+    18 * scale, 18 * scale,
+    135, 225, C_WHITE
+  );
+
+  lcd.drawArc(
+    cx - 1 * scale, cy - 5 * scale,
+    27 * scale, 27 * scale,
+    135, 225, C_WHITE
+  );
+
+  lcd.drawArc(
+    cx + 1 * scale, cy - 5 * scale,
+    18 * scale, 18 * scale,
+    315, 45, C_WHITE
+  );
+
+  lcd.drawArc(
+    cx + 1 * scale, cy - 5 * scale,
+    27 * scale, 27 * scale,
+    315, 45, C_WHITE
+  );
 }
-
 
 // ============================================================
 // ECRAN PRINCIPAL
@@ -536,20 +502,16 @@ void drawAntennaLogo(int cx, int cy, float scale = 1.0f) {
 void draw() {
 
   lcd.fillScreen(C_BG);
-
   lcd.setTextDatum(TL_DATUM);
 
-
-  // ----------------------------------------------------------
   // HEADER
-  // ----------------------------------------------------------
-
-  // Logo antenne juste avant le titre, groupe centré
   {
     const String title = " ANTENNA CONTROL CENTER";
     const int logoW = 20;
     const int gap = 8;
+
     lcd.setTextFont(2);
+
     const int titleW = lcd.textWidth(title);
     const int totalW = logoW + gap + titleW;
     const int startX = (lcd.width() - totalW) / 2;
@@ -569,27 +531,13 @@ void draw() {
     );
   }
 
-
-  // ----------------------------------------------------------
-  // RELAIS
-  // ----------------------------------------------------------
-
-  for (int i = 0; i < 8; i++)
+  // 9 RELAIS
+  for (int i = 0; i < RELAY_COUNT; i++)
     drawRelay(i);
 
-
-  // ----------------------------------------------------------
   // FOOTER
-  // ----------------------------------------------------------
-
   lcd.setTextDatum(MC_DATUM);
-
   lcd.setTextColor(C_MUTED);
-
-
-  // ----------------------------------------------------------
-  // ADRESSE IP ESP32-ETH01
-  // ----------------------------------------------------------
 
   lcd.drawString(
     String("IP : ") + ethernetIP,
@@ -597,11 +545,6 @@ void draw() {
     lcd.height() - 27,
     1
   );
-
-
-  // ----------------------------------------------------------
-  // COPYRIGHT
-  // ----------------------------------------------------------
 
   lcd.drawString(
     "2026 - F4BIT@CopyLeft. Sous licence GNU General Public License v3.0",
@@ -613,107 +556,73 @@ void draw() {
   lcd.setTextDatum(TL_DATUM);
 }
 
-
 // ============================================================
-// LECTURE ETATS RELAIS
+// LECTURE DES ETATS RELAIS
+// L'ETH01 doit renvoyer 9 octets
 // ============================================================
 
 void readStates() {
 
   Wire.beginTransmission(WT32);
-
   Wire.write(2);
-
   Wire.endTransmission();
 
   delay(2);
 
   Wire.requestFrom(
     WT32,
-    (uint8_t)8
+    (uint8_t)RELAY_COUNT
   );
 
-  for (int i = 0; i < 8; i++) {
+  for (int i = 0; i < RELAY_COUNT; i++) {
 
-    states[i] =
-      Wire.available()
+    states[i] = Wire.available()
       ? Wire.read()
       : 0;
   }
-}
 
+  while (Wire.available())
+    Wire.read();
+}
 
 // ============================================================
 // LECTURE ADRESSE IP ESP32-ETH01
-//
-// Protocole ETH01 :
-//
-// LCD -> ETH01
-//   0x05
-//
-// ETH01 -> LCD
-//   16 octets
-//
-// Exemple :
-//   "192.168.1.100"
-//   + '\0'
-//   + zéros
 // ============================================================
 
 bool readEthernetIP() {
 
   Wire.beginTransmission(WT32);
-
   Wire.write(0x05);
 
-  uint8_t error =
-    Wire.endTransmission(false);
+  uint8_t error = Wire.endTransmission(false);
 
-  if (error != 0) {
-
+  if (error != 0)
     return false;
-  }
 
-
-  uint8_t received =
-    Wire.requestFrom(
-      WT32,
-      (uint8_t)16
-    );
-
+  uint8_t received = Wire.requestFrom(
+    WT32,
+    (uint8_t)16
+  );
 
   if (received != 16) {
 
-    while (Wire.available()) {
+    while (Wire.available())
       Wire.read();
-    }
 
     return false;
   }
-
 
   char newIP[16];
 
   for (uint8_t i = 0; i < 16; i++) {
 
-    if (Wire.available()) {
-
-      newIP[i] =
-        (char)Wire.read();
-
-    } else {
-
+    if (Wire.available())
+      newIP[i] = (char)Wire.read();
+    else
       newIP[i] = '\0';
-    }
   }
 
-
   newIP[15] = '\0';
-
-
-  // ----------------------------------------------------------
-  // Mise à jour du cache
-  // ----------------------------------------------------------
 
   strncpy(
     ethernetIP,
@@ -721,17 +630,13 @@ bool readEthernetIP() {
     sizeof(ethernetIP)
   );
 
-  ethernetIP[
-    sizeof(ethernetIP) - 1
-  ] = '\0';
-
+  ethernetIP[sizeof(ethernetIP) - 1] = '\0';
 
   return true;
 }
 
-
 // ============================================================
-// CLAVIER : TOUCHE
+// CLAVIER : DESSIN D'UNE TOUCHE
 // ============================================================
 
 void drawKey(
@@ -744,21 +649,11 @@ void drawKey(
 ) {
 
   lcd.fillRoundRect(
-    x,
-    y,
-    w,
-    h,
-    8,
-    color
+    x, y, w, h, 8, color
   );
 
   lcd.drawRoundRect(
-    x,
-    y,
-    w,
-    h,
-    8,
-    C_BORDER
+    x, y, w, h, 8, C_BORDER
   );
 
   textCenter(
@@ -770,7 +665,6 @@ void drawKey(
   );
 }
 
-
 // ============================================================
 // ECRAN CLAVIER
 // ============================================================
@@ -779,13 +673,7 @@ void keyboard() {
 
   lcd.fillScreen(C_BG);
 
-
-  // ----------------------------------------------------------
-  // HEADER
-  // ----------------------------------------------------------
-
   lcd.setTextDatum(MC_DATUM);
-
   lcd.setTextColor(C_WHITE);
 
   lcd.drawString(
@@ -795,31 +683,16 @@ void keyboard() {
     2
   );
 
-
-  // ----------------------------------------------------------
   // CHAMP NOM
-  // ----------------------------------------------------------
-
   lcd.fillRoundRect(
-    8,
-    30,
-    464,
-    34,
-    10,
-    C_PANEL
+    8, 30, 464, 34, 10, C_PANEL
   );
 
   lcd.drawRoundRect(
-    8,
-    30,
-    464,
-    34,
-    10,
-    C_BORDER
+    8, 30, 464, 34, 10, C_BORDER
   );
 
   lcd.setTextDatum(ML_DATUM);
-
   lcd.setTextColor(C_WHITE);
 
   String displayed = editName;
@@ -834,13 +707,7 @@ void keyboard() {
     2
   );
 
-
-  // ----------------------------------------------------------
-  // COMPTEUR
-  // ----------------------------------------------------------
-
   lcd.setTextDatum(MR_DATUM);
-
   lcd.setTextColor(C_MUTED);
 
   lcd.drawString(
@@ -850,11 +717,7 @@ void keyboard() {
     1
   );
 
-
-  // ----------------------------------------------------------
-  // CLAVIER
-  // ----------------------------------------------------------
-
+  // TOUCHES AZERTY ET CHIFFRES
   for (int i = 0; i < NKEYS; i++) {
 
     int row = i / KB_COLS;
@@ -864,72 +727,45 @@ void keyboard() {
     int y = KB_Y0 + row * KB_PY;
 
     drawKey(
-      x,
-      y,
-      KB_W,
-      KB_H,
+      x, y, KB_W, KB_H,
       String(keys[i]),
       C_PANEL
     );
   }
 
-
-  // ----------------------------------------------------------
-  // ACTIONS
-  // ----------------------------------------------------------
-
+  // BOUTONS D'ACTION
   drawKey(
     ACT_X0 + 0 * ACT_PX,
-    ACT_Y,
-    ACT_W,
-    ACT_H,
-    "EFFACER",
-    C_ORANGE
+    ACT_Y, ACT_W, ACT_H,
+    "EFFACER", C_ORANGE
   );
 
   drawKey(
     ACT_X0 + 1 * ACT_PX,
-    ACT_Y,
-    ACT_W,
-    ACT_H,
-    "ESPACE",
-    C_BLUE
+    ACT_Y, ACT_W, ACT_H,
+    "ESPACE", C_BLUE
   );
 
   drawKey(
     ACT_X0 + 2 * ACT_PX,
-    ACT_Y,
-    ACT_W,
-    ACT_H,
-    "ANNULER",
-    C_RED_DARK
+    ACT_Y, ACT_W, ACT_H,
+    "ANNULER", C_RED_DARK
   );
 
   drawKey(
     ACT_X0 + 3 * ACT_PX,
-    ACT_Y,
-    ACT_W,
-    ACT_H,
-    "VALIDER",
-    C_GREEN
+    ACT_Y, ACT_W, ACT_H,
+    "VALIDER", C_GREEN
   );
 }
 
-
 // ============================================================
-// GESTION CLAVIER
+// GESTION DU CLAVIER
 // ============================================================
 
-void editTouch(
-  uint16_t x,
-  uint16_t y
-) {
+void editTouch(uint16_t x, uint16_t y) {
 
-
-  // ----------------------------------------------------------
   // TOUCHES AZERTY + CHIFFRES
-  // ----------------------------------------------------------
-
   if (
     y >= KB_Y0 &&
     y < KB_Y0 + KB_ROWS * KB_PY
@@ -937,19 +773,12 @@ void editTouch(
 
     if (x >= KB_X0) {
 
-      int row =
-        (y - KB_Y0) / KB_PY;
+      int row = (y - KB_Y0) / KB_PY;
+      int col = (x - KB_X0) / KB_PX;
 
-      int col =
-        (x - KB_X0) / KB_PX;
+      if (col >= 0 && col < KB_COLS) {
 
-      if (
-        col >= 0 &&
-        col < KB_COLS
-      ) {
-
-        int k =
-          row * KB_COLS + col;
+        int k = row * KB_COLS + col;
 
         if (k < NKEYS) {
 
@@ -964,68 +793,46 @@ void editTouch(
     return;
   }
 
-
-  // ----------------------------------------------------------
-  // ACTIONS
-  // ----------------------------------------------------------
-
+  // BOUTONS D'ACTION
   if (
     y >= ACT_Y &&
     y < ACT_Y + ACT_H &&
     x >= ACT_X0
   ) {
 
-    int a =
-      (x - ACT_X0) / ACT_PX;
+    int a = (x - ACT_X0) / ACT_PX;
 
     switch (a) {
 
       case 0:
-
         if (editName.length())
-          editName.remove(
-            editName.length() - 1
-          );
+          editName.remove(editName.length() - 1);
 
         keyboard();
-
         break;
 
-
       case 1:
-
         if (editName.length() < MAX_NAME_LEN)
           editName += " ";
 
         keyboard();
-
         break;
-
 
       case 2:
-
         editing = false;
-
         draw();
-
         break;
 
-
       case 3:
-
         saveName();
-
         editing = false;
-
         draw();
-
         break;
     }
 
     return;
   }
 }
-
 
 // ============================================================
 // SETUP
@@ -1035,86 +842,40 @@ void setup() {
 
   Serial.begin(115200);
 
-
-  // ----------------------------------------------------------
   // RETROECLAIRAGE
-  // ----------------------------------------------------------
+  pinMode(BACKLIGHT_PIN, OUTPUT);
+  digitalWrite(BACKLIGHT_PIN, HIGH);
 
-  pinMode(
-    BACKLIGHT_PIN,
-    OUTPUT
-  );
-
-  digitalWrite(
-    BACKLIGHT_PIN,
-    HIGH
-  );
-
-
-  // ----------------------------------------------------------
   // ECRAN
-  // ----------------------------------------------------------
-
   lcd.init();
+  lcd.setRotation(SCREEN_ROTATION);
 
-  lcd.setRotation(
-    SCREEN_ROTATION
-  );
-
-
-  // ----------------------------------------------------------
-  // I2C
-  // ----------------------------------------------------------
-
+  // I2C : BROCHES D'ORIGINE
   Wire.begin(
     I2C_SDA,
     I2C_SCL,
     100000
   );
 
-
-  // ----------------------------------------------------------
   // NOMS
-  // ----------------------------------------------------------
-
   loadNames();
-
   makeButtons();
 
-
-  // ----------------------------------------------------------
-  // ENVOI DES NOMS
-  // ----------------------------------------------------------
-
-  for (int i = 0; i < 8; i++) {
-
+  // ENVOI DES 9 NOMS A L'ETH01
+  for (int i = 0; i < RELAY_COUNT; i++) {
     sendName(i);
-
     delay(2);
   }
 
-
-  // ----------------------------------------------------------
-  // ETATS RELAIS
-  // ----------------------------------------------------------
-
+  // ETATS DES RELAIS
   readStates();
 
-
-  // ----------------------------------------------------------
-  // LECTURE IP ETH01
-  // ----------------------------------------------------------
-
+  // ADRESSE IP
   readEthernetIP();
 
-
-  // ----------------------------------------------------------
   // AFFICHAGE
-  // ----------------------------------------------------------
-
   draw();
 }
-
 
 // ============================================================
 // LOOP
@@ -1122,54 +883,31 @@ void setup() {
 
 void loop() {
 
-
-  // ==========================================================
   // MODE EDITION
-  // ==========================================================
-
   if (editing) {
 
     uint16_t x, y;
+    bool t = touchRead(x, y);
 
-    bool t =
-      touchRead(x, y);
-
-    if (
-      t &&
-      !wasTouch
-    ) {
-
+    if (t && !wasTouch)
       editTouch(x, y);
-    }
 
     wasTouch = t;
 
     delay(20);
-
     return;
   }
 
-
-  // ==========================================================
   // MODE NORMAL
-  // ==========================================================
-
   uint16_t x, y;
+  bool t = touchRead(x, y);
 
-  bool t =
-    touchRead(x, y);
-
-
-  // ----------------------------------------------------------
   // DEBUT APPUI
-  // ----------------------------------------------------------
+  if (t && !wasTouch) {
 
-  if (
-    t &&
-    !wasTouch
-  ) {
+    touchIndex = -1;
 
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < RELAY_COUNT; i++) {
 
       if (
         x >= b[i].x &&
@@ -1179,52 +917,28 @@ void loop() {
       ) {
 
         touchIndex = i;
-
-        touchStart =
-          millis();
-
+        touchStart = millis();
         break;
       }
     }
   }
 
-
-  // ----------------------------------------------------------
   // FIN APPUI
-  // ----------------------------------------------------------
+  if (!t && wasTouch && touchIndex >= 0) {
 
-  if (
-    !t &&
-    wasTouch &&
-    touchIndex >= 0
-  ) {
+    unsigned long d = millis() - touchStart;
 
-    unsigned long d =
-      millis() - touchStart;
-
-
-    // --------------------------------------------------------
-    // APPUI LONG
-    // --------------------------------------------------------
-
+    // APPUI LONG : RENOMMAGE
     if (d >= 700) {
 
-      editIndex =
-        touchIndex;
-
-      editName =
-        names[editIndex];
+      editIndex = touchIndex;
+      editName = names[editIndex];
 
       editing = true;
-
       keyboard();
     }
 
-
-    // --------------------------------------------------------
-    // APPUI COURT
-    // --------------------------------------------------------
-
+    // APPUI COURT : ON / OFF
     else {
 
       sendCmd(
@@ -1235,62 +949,41 @@ void loop() {
       delay(20);
 
       readStates();
-
       draw();
     }
 
     touchIndex = -1;
   }
 
-
   wasTouch = t;
 
-
-  // ==========================================================
   // ACTUALISATION AUTOMATIQUE
-  // ==========================================================
-
-  if (
-    millis() - lastPoll > 500
-  ) {
+  if (millis() - lastPoll > 500) {
 
     lastPoll = millis();
 
     bool redraw = false;
 
-
-    // --------------------------------------------------------
     // ETATS RELAIS
-    // --------------------------------------------------------
-
-    uint8_t old[8];
+    uint8_t old[RELAY_COUNT];
 
     memcpy(
       old,
       states,
-      8
+      sizeof(states)
     );
 
     readStates();
 
+    for (int i = 0; i < RELAY_COUNT; i++) {
 
-    for (int i = 0; i < 8; i++) {
-
-      if (
-        old[i] != states[i]
-      ) {
-
+      if (old[i] != states[i]) {
         redraw = true;
-
         break;
       }
     }
 
-
-    // --------------------------------------------------------
-    // ADRESSE IP ESP32-ETH01
-    // --------------------------------------------------------
-
+    // ADRESSE IP
     char oldIP[16];
 
     strncpy(
@@ -1299,35 +992,17 @@ void loop() {
       sizeof(oldIP)
     );
 
-    oldIP[
-      sizeof(oldIP) - 1
-    ] = '\0';
-
+    oldIP[sizeof(oldIP) - 1] = '\0';
 
     readEthernetIP();
 
-
-    if (
-      strcmp(
-        oldIP,
-        ethernetIP
-      ) != 0
-    ) {
-
+    if (strcmp(oldIP, ethernetIP) != 0)
       redraw = true;
-    }
 
-
-    // --------------------------------------------------------
-    // RAFRAICHISSEMENT ECRAN
-    // --------------------------------------------------------
-
-    if (redraw) {
-
+    // RAFRAICHISSEMENT
+    if (redraw)
       draw();
-    }
   }
-
 
   delay(10);
 }
